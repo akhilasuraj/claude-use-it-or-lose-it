@@ -445,9 +445,9 @@ func renderPage(notice string, now time.Time) []byte {
 	if cfg.Shadow {
 		picksHead = "Would pick"
 	}
-	fmt.Fprintf(&b, `<thead><tr><th scope="col">Account</th><th scope="col">Weekly reset</th><th scope="col">Weekly used</th><th scope="col">At this pace</th><th scope="col">5-hour used</th><th scope="col">%s</th><th scope="col">Status</th></tr></thead><tbody>`, picksHead)
+	fmt.Fprintf(&b, `<thead><tr><th scope="col">Account</th><th scope="col">Weekly reset</th><th scope="col">Weekly used</th><th scope="col">5-hour used</th><th scope="col">%s</th><th scope="col">Status</th></tr></thead><tbody>`, picksHead)
 	if len(ranked) == 0 {
-		b.WriteString(`<tr style="--i:0"><th scope="row" colspan="7">No enabled Claude accounts found yet.</th></tr>`)
+		b.WriteString(`<tr style="--i:0"><th scope="row" colspan="6">No enabled Claude accounts found yet.</th></tr>`)
 	}
 	for i, rc := range ranked {
 		acc := accounts[rc.id]
@@ -473,17 +473,6 @@ func renderPage(notice string, now time.Time) []byte {
 			fmt.Fprintf(&b, `<td data-label="Weekly used"><span class="gauge">%s<span class="pct">%.0f%%</span></span></td>`, bubbleHTML(weekly.Utilization, 0), weekly.Utilization)
 		} else {
 			b.WriteString(`<td data-label="Weekly used"><span class="meta">–</span></td>`)
-		}
-
-		if p, ok := paces[rc.id]; ok {
-			headline, detail := paceSummary(p, now)
-			if headline == "" {
-				fmt.Fprintf(&b, `<td data-label="At this pace"><span class="meta">%s</span></td>`, html.EscapeString(detail))
-			} else {
-				fmt.Fprintf(&b, `<td data-label="At this pace"><span><span class="pct">%s</span><span class="meta">%s</span></span></td>`, html.EscapeString(headline), html.EscapeString(detail))
-			}
-		} else {
-			b.WriteString(`<td data-label="At this pace"><span class="meta">–</span></td>`)
 		}
 
 		if fh, ok := acc.Windows["five_hour"]; ok {
