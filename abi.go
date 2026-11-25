@@ -126,6 +126,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
 	stopRefresher()
+	history.save()
 }
 
 // callHost invokes a host callback (host.auth.list, host.log, ...) and returns its result payload.

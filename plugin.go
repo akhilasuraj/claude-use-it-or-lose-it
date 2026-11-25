@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	pluginName      = "reset-scheduler"
-	pluginVersion   = "0.2.0"
+	pluginName      = "claude-use-it-or-lose-it"
+	pluginTitle     = "Use It or Lose It"
+	pluginVersion   = "1.0.0"
 	resourcePath    = "/status"
 	claudeProvider  = "claude"
 	defaultInterval = 30
@@ -32,6 +33,8 @@ const (
 	keyInterval     = "Check usage every (minutes)"
 	keyWindow       = "Weekly limit to order by"
 	keyDeprioritize = "Move full accounts to the bottom"
+	keyShadow       = "Watch only, do not change routing"
+	keyHistoryDir   = "Folder for usage history"
 
 	windowAll    = "All models"
 	windowOpus   = "Opus"
@@ -49,6 +52,8 @@ type pluginConfig struct {
 	RefreshIntervalMinutes int
 	WeeklyWindow           string // usage API window key: seven_day, seven_day_opus, seven_day_sonnet
 	DeprioritizeExhausted  *bool
+	Shadow                 bool
+	HistoryDir             string
 }
 
 // parseConfig reads the plugin block, preferring the labelled keys over the legacy ones.
@@ -89,6 +94,17 @@ func parseConfig(data []byte) (pluginConfig, error) {
 			b = true
 		}
 		cfg.DeprioritizeExhausted = &b
+	}
+	if v, ok := raw[keyShadow]; ok && v != nil {
+		switch x := v.(type) {
+		case bool:
+			cfg.Shadow = x
+		case string:
+			cfg.Shadow = strings.EqualFold(strings.TrimSpace(x), "true")
+		}
+	}
+	if v, ok := raw[keyHistoryDir]; ok && v != nil {
+		cfg.HistoryDir = strings.TrimSpace(fmt.Sprint(v))
 	}
 	return cfg, nil
 }
@@ -152,6 +168,9 @@ func configure(raw []byte) error {
 	}
 	previous := loadedConfig()
 	currentConfig.Store(cfg)
+	if previous.HistoryDir != cfg.HistoryDir || !history.loaded() {
+		history.load(cfg.historyPath())
+	}
 	if previous.window() != cfg.window() || previous.interval() != cfg.interval() {
 		requestRefresh(true)
 	}
@@ -168,12 +187,15 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(registration())
 	case pluginabi.MethodSchedulerPick:
 		return pick(request)
+	case pluginabi.MethodUsageHandle:
+		handleUsage(request)
+		return okEnvelope(map[string]any{})
 	case pluginabi.MethodManagementRegister:
 		return okEnvelope(map[string]any{
 			"resources": []map[string]string{{
 				"Path":        resourcePath,
-				"Menu":        "Reset Scheduler",
-				"Description": "Claude accounts ordered by weekly reset (soonest first).",
+				"Menu":        pluginTitle,
+				"Description": "Claude accounts ordered by weekly reset, soonest first, with usage history.",
 			}},
 		})
 	case pluginabi.MethodManagementHandle:
@@ -187,11 +209,10 @@ func registration() map[string]any {
 	return map[string]any{
 		"schema_version": pluginabi.SchemaVersion,
 		"metadata": pluginapi.Metadata{
-			Name:    pluginName,
-			Version: pluginVersion,
-			Author:  "local build",
-			// Required by the host; this plugin is local-only and not published anywhere.
-			GitHubRepository: "https://github.com/local/cliproxy-reset-scheduler",
+			Name:             pluginName,
+			Version:          pluginVersion,
+			Author:           "Akhila Abesinghe",
+			GitHubRepository: "https://github.com/akhilasuraj/claude-use-it-or-lose-it",
 			Logo:             pluginLogo,
 			// The host HTML-escapes descriptions and the panel shows them as plain text, so keep
 			// them free of ' " & < > (TestConfigFieldDescriptionsArePlain guards this).
@@ -215,12 +236,25 @@ func registration() map[string]any {
 					Default:     true,
 					Description: "Accounts at 100 percent of their weekly or 5-hour limit are tried last. Default on.",
 				},
+				{
+					Name:        keyShadow,
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Default:     false,
+					Description: "The status page shows which account the plugin would pick, but requests keep using the normal routing. Use it to compare before switching over.",
+				},
+				{
+					Name:        keyHistoryDir,
+					Type:        pluginapi.ConfigFieldTypeString,
+					Default:     "",
+					Description: "Where the usage history file is kept. Leave empty to use your user config folder. In Docker, point it at a mounted volume.",
+				},
 			},
 		},
 		"capabilities": map[string]any{
 			"scheduler":                   true,
 			"scheduler_across_priorities": true,
 			"management_api":              true,
+			"usage_plugin":                true,
 		},
 	}
 }
@@ -229,13 +263,23 @@ func registration() map[string]any {
 
 type pickStats struct {
 	mu       sync.Mutex
-	counts   map[string]int64
+	counts   map[string]int64 // picks the plugin made, or would have made in watch-only mode
+	served   map[string]int64 // requests that were actually sent with each account
 	lastID   string
 	lastAt   time.Time
 	lastNote string
 }
 
-var stats = &pickStats{counts: map[string]int64{}}
+var stats = &pickStats{counts: map[string]int64{}, served: map[string]int64{}}
+
+func (s *pickStats) recordServed(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	s.served[id]++
+	s.mu.Unlock()
+}
 
 func (s *pickStats) record(id, note string) {
 	s.mu.Lock()
@@ -253,12 +297,17 @@ func pick(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	id, note := choose(req.Candidates, snapshotAccounts(), loadedConfig(), time.Now())
+	cfg := loadedConfig()
+	id, note := choose(req.Candidates, snapshotAccounts(), cfg, time.Now())
 	if id == "" {
 		// Leave the decision to the configured built-in routing strategy.
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 	stats.record(id, note)
+	if cfg.Shadow {
+		// Watch-only mode: count the choice but let the built-in strategy decide.
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
+	}
 	return okEnvelope(pluginapi.SchedulerPickResponse{AuthID: id, Handled: true})
 }
 

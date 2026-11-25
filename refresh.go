@@ -16,32 +16,39 @@ import (
 )
 
 const (
-	usageURL          = "https://api.anthropic.com/api/oauth/usage"
-	manualCooldown    = time.Minute
-	minWake           = time.Minute
-	postResetGrace    = 2 * time.Minute
-	httpTimeout       = 20 * time.Second
-	usageUserAgent    = "claude-cli/2.1.280 (external, cli)"
-	usageAnthropicBet = "oauth-2025-04-20"
+	usageURL           = "https://api.anthropic.com/api/oauth/usage"
+	manualCooldown     = time.Minute
+	minWake            = time.Minute
+	postResetGrace     = 2 * time.Minute
+	httpTimeout        = 20 * time.Second
+	cooldownClearEvery = 30 * time.Minute
+	usageUserAgent     = "claude-cli/2.1.280 (external, cli)"
+	usageAnthropicBet  = "oauth-2025-04-20"
 )
 
 // usageWindow is one quota window from Anthropic's OAuth usage endpoint.
 type usageWindow struct {
 	Utilization float64
 	ResetsAt    time.Time
+	At          time.Time // when this reading was taken
 }
 
 // accountState is the cached quota snapshot for one Claude credential.
 type accountState struct {
-	ID        string
-	Label     string
-	FileName  string
-	Priority  int
-	Disabled  bool
-	Status    string
-	FetchedAt time.Time
-	Error     string
-	Windows   map[string]usageWindow
+	ID            string
+	AuthIndex     string
+	Label         string
+	FileName      string
+	Priority      int
+	Disabled      bool
+	Unavailable   bool
+	Status        string
+	StatusMessage string
+	FetchedAt     time.Time // last successful usage check
+	HeadersAt     time.Time // last update from response headers
+	Error         string
+	LoginExpired  bool
+	Windows       map[string]usageWindow
 }
 
 func (a accountState) exhausted(weekly string, now time.Time) bool {
@@ -55,6 +62,7 @@ func (a accountState) exhausted(weekly string, now time.Time) bool {
 
 type refresher struct {
 	mu          sync.RWMutex
+	cleared     map[string]time.Time // last cooldown reset per account
 	accounts    map[string]accountState
 	lastRun     time.Time
 	lastErr     string
@@ -68,6 +76,7 @@ type refresher struct {
 
 var state = &refresher{
 	accounts: map[string]accountState{},
+	cleared:  map[string]time.Time{},
 	trigger:  make(chan struct{}, 1),
 	stop:     make(chan struct{}),
 }
@@ -170,50 +179,141 @@ func (r *refresher) refreshAll() {
 		r.mu.Lock()
 		r.lastErr = err.Error()
 		r.mu.Unlock()
-		hostLog("warn", "reset-scheduler: listing credentials failed", map[string]any{"error": err.Error()})
+		hostLog("warn", pluginName+": listing credentials failed", map[string]any{"error": err.Error()})
 		return
 	}
-	weekly := loadedConfig().window()
+	cfg := loadedConfig()
+	weekly := cfg.window()
 	next := make(map[string]accountState, len(entries))
 	for _, e := range entries {
 		acc := accountState{
-			ID:       e.ID,
-			Label:    firstNonEmpty(e.Email, e.Label, e.Name),
-			FileName: e.Name,
-			Priority: e.Priority,
-			Disabled: e.Disabled,
-			Status:   e.Status,
+			ID:            e.ID,
+			AuthIndex:     e.AuthIndex,
+			Label:         firstNonEmpty(e.Email, e.Label, e.Name),
+			FileName:      e.Name,
+			Priority:      e.Priority,
+			Disabled:      e.Disabled,
+			Unavailable:   e.Unavail,
+			Status:        e.Status,
+			StatusMessage: e.StatusMsg,
+		}
+		r.mu.RLock()
+		prev, hadPrev := r.accounts[e.ID]
+		r.mu.RUnlock()
+		if hadPrev {
+			acc.HeadersAt = prev.HeadersAt
 		}
 		if e.Disabled {
 			next[e.ID] = acc
 			continue
 		}
 		windows, errFetch := fetchUsage(e.AuthIndex)
-		acc.FetchedAt = time.Now()
 		if errFetch != nil {
 			acc.Error = errFetch.Error()
-			// Keep the previous snapshot so one failed fetch does not reshuffle routing.
-			r.mu.RLock()
-			if prev, ok := r.accounts[e.ID]; ok && prev.Error == "" {
+			acc.LoginExpired = isLoginExpired(acc.Error, e.Status, e.StatusMsg)
+			// Keep the previous readings so one failed check does not reshuffle routing.
+			if hadPrev {
 				acc.Windows = prev.Windows
-				acc.Error = ""
 				acc.FetchedAt = prev.FetchedAt
-				acc.Status = firstNonEmpty(e.Status, prev.Status)
+				if prev.Error == "" && !acc.LoginExpired {
+					acc.Error = ""
+				}
 			}
-			r.mu.RUnlock()
 			if acc.Error != "" {
-				hostLog("warn", "reset-scheduler: usage fetch failed", map[string]any{"account": acc.Label, "error": errFetch.Error()})
+				hostLog("warn", pluginName+": usage check failed", map[string]any{"account": acc.Label, "error": errFetch.Error()})
 			}
 		} else {
+			acc.FetchedAt = time.Now()
+			if hadPrev {
+				// Header readings taken while the check was in flight may be newer.
+				windows = mergeWindows(prev.Windows, windows)
+			}
 			acc.Windows = windows
 		}
 		next[e.ID] = acc
 	}
 	r.mu.Lock()
+	// Keep header updates that arrived while this refresh was running.
+	for id, acc := range next {
+		if cur, ok := r.accounts[id]; ok && cur.HeadersAt.After(acc.HeadersAt) {
+			acc.Windows = mergeWindows(acc.Windows, cur.Windows)
+			acc.HeadersAt = cur.HeadersAt
+			if !acc.LoginExpired {
+				acc.Error = ""
+			}
+			next[id] = acc
+		}
+	}
 	r.accounts = next
 	r.lastErr = ""
 	r.mu.Unlock()
-	hostLog("info", "reset-scheduler: refreshed weekly reset times", map[string]any{"accounts": len(next), "window": weekly})
+
+	now := time.Now()
+	for _, acc := range next {
+		if acc.Error == "" && !acc.Disabled && !acc.FetchedAt.IsZero() && now.Sub(acc.FetchedAt) < time.Minute {
+			history.add(acc, acc.FetchedAt)
+		}
+		r.clearStaleCooldown(acc, weekly, now)
+	}
+	history.save()
+	hostLog("info", pluginName+": checked usage", map[string]any{"accounts": len(next), "window": weekly})
+}
+
+// clearStaleCooldown lifts the proxy's cooldown on an account that a fresh usage check shows
+// has room again, for example after Anthropic reset its limit early. Without this the proxy
+// keeps skipping the account until its own retry time passes.
+func (r *refresher) clearStaleCooldown(acc accountState, weekly string, now time.Time) {
+	if !acc.Unavailable || acc.Disabled || acc.Error != "" || acc.AuthIndex == "" || acc.FetchedAt.IsZero() {
+		return
+	}
+	if now.Sub(acc.FetchedAt) > time.Minute || !hasRoom(acc, weekly, now) {
+		return
+	}
+	r.mu.Lock()
+	recent := now.Sub(r.cleared[acc.ID]) < cooldownClearEvery
+	if !recent {
+		r.cleared[acc.ID] = now
+	}
+	r.mu.Unlock()
+	if recent {
+		return
+	}
+	if _, err := callHost(pluginabi.MethodHostRoutingResetCooldown, pluginapi.HostRoutingResetCooldownRequest{AuthIndex: acc.AuthIndex}); err != nil {
+		hostLog("warn", pluginName+": clearing cooldown failed", map[string]any{"account": acc.Label, "error": err.Error()})
+		return
+	}
+	hostLog("info", pluginName+": cleared cooldown, the account has room again", map[string]any{"account": acc.Label})
+}
+
+// hasRoom reports whether the readings show the account below both its limits.
+func hasRoom(acc accountState, weekly string, now time.Time) bool {
+	for _, key := range []string{weekly, "five_hour"} {
+		w, ok := acc.Windows[key]
+		if !ok {
+			return false
+		}
+		if w.Utilization >= 100 && w.ResetsAt.After(now) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLoginExpired recognises a credential that needs a new login, as opposed to a passing error.
+func isLoginExpired(fetchErr, status, statusMessage string) bool {
+	if strings.Contains(fetchErr, "HTTP 401") || strings.Contains(fetchErr, "no access_token") {
+		return true
+	}
+	if !strings.EqualFold(status, "error") {
+		return false
+	}
+	msg := strings.ToLower(statusMessage)
+	for _, hint := range []string{"invalid_grant", "refresh", "unauthorized", "401"} {
+		if strings.Contains(msg, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 type claudeAuth struct {
@@ -223,7 +323,9 @@ type claudeAuth struct {
 	Label     string
 	Email     string
 	Status    string
+	StatusMsg string
 	Disabled  bool
+	Unavail   bool
 	Priority  int
 }
 
@@ -254,7 +356,9 @@ func listClaudeAuths() ([]claudeAuth, error) {
 			Label:     entry.Label,
 			Email:     entry.Email,
 			Status:    entry.Status,
+			StatusMsg: entry.StatusMessage,
 			Disabled:  entry.Disabled,
+			Unavail:   entry.Unavailable,
 			Priority:  entry.Priority,
 		})
 	}
@@ -297,7 +401,16 @@ func fetchUsage(authIndex string) (map[string]usageWindow, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("usage endpoint returned HTTP %d", resp.StatusCode)
 	}
-	return parseUsage(body)
+	windows, err := parseUsage(body)
+	if err != nil {
+		return nil, err
+	}
+	at := time.Now()
+	for k, w := range windows {
+		w.At = at
+		windows[k] = w
+	}
+	return windows, nil
 }
 
 func parseUsage(body []byte) (map[string]usageWindow, error) {
