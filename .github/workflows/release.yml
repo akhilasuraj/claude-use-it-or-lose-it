@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  PLUGIN_ID: claude-use-it-or-lose-it
+
+jobs:
+  verify:
+    name: Check tag matches pluginVersion
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag with plugin.go
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          code_version="$(sed -n 's/^[[:space:]]*pluginVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' plugin.go | head -n 1)"
+          if [ -z "$code_version" ]; then
+            echo "::error file=plugin.go::Could not find pluginVersion in plugin.go"
+            exit 1
+          fi
+          if [ "$version" != "$code_version" ]; then
+            echo "::error file=plugin.go::Tag $tag does not match pluginVersion \"$code_version\" in plugin.go"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $version"
+
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, goos: windows, goarch: amd64, ext: dll }
+          - { runner: windows-11-arm, goos: windows, goarch: arm64, ext: dll }
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, ext: so }
+          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64, ext: so }
+          # macos-13 has been retired; macos-15-intel is the remaining x64 macOS runner.
+          - { runner: macos-15-intel, goos: darwin, goarch: amd64, ext: dylib }
+          - { runner: macos-latest, goos: darwin, goarch: arm64, ext: dylib }
+    env:
+      CGO_ENABLED: "1"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The Windows Arm64 image has no Arm64 MinGW toolchain, which cgo needs.
+      - name: Install llvm-mingw (Windows Arm64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          $release = "20261006"
+          $name = "llvm-mingw-$release-ucrt-aarch64"
+          Invoke-WebRequest -Uri "https://github.com/mstorsjo/llvm-mingw/releases/download/$release/$name.zip" -OutFile "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\llvm-mingw.zip" -DestinationPath "$env:RUNNER_TEMP"
+          "$env:RUNNER_TEMP\$name\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CC=aarch64-w64-mingw32-clang" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Test
+        shell: bash
+        run: go test ./...
+
+      - name: Build library
+        shell: bash
+        run: |
+          mkdir -p dist/pkg
+          go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
+            -o "dist/pkg/${PLUGIN_ID}.${{ matrix.ext }}" .
+          # Keep only the library in the package; drop the generated C header.
+          rm -f dist/pkg/*.h
+          ls -l dist/pkg
+
+      - name: Package (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $zip = "dist/$env:PLUGIN_ID`_$env:VERSION`_$env:GOOS`_$env:GOARCH.zip"
+          Compress-Archive -Path "dist/pkg/$env:PLUGIN_ID.${{ matrix.ext }}" -DestinationPath $zip
+          Get-Item $zip
+
+      - name: Package (Linux and macOS)
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          zip="${PLUGIN_ID}_${VERSION}_${GOOS}_${GOARCH}.zip"
+          (cd dist/pkg && zip -9 "../${zip}" "${PLUGIN_ID}.${{ matrix.ext }}")
+          unzip -l "dist/${zip}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_ID }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: ${{ env.PLUGIN_ID }}_*
+          merge-multiple: true
+
+      - name: Write checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ needs.verify.outputs.version }}
+          files: |
+            dist/*.zip
+            dist/checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true

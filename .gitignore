@@ -5,3 +5,6 @@ preview/
 *.dylib
 *.h
 status*.html
+dist/
+*.exe
+*.zip
