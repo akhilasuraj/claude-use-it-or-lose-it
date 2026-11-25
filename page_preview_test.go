@@ -32,6 +32,36 @@ func TestWritePreview(t *testing.T) {
 	state.mu.Unlock()
 	stats.record("a", "")
 	stats.record("a", "")
+	stats.recordServed("a")
+	stats.recordServed("a")
+	stats.recordServed("a")
+	state.mu.Lock()
+	d := state.accounts["d"]
+	d.LoginExpired = true
+	state.accounts["d"] = d
+	state.mu.Unlock()
+	// Synthetic history: a daytime-heavy pattern over the current cycle of each account.
+	history.mu.Lock()
+	history.accounts = map[string][]sample{}
+	history.mu.Unlock()
+	for _, acc := range snapshotAccounts() {
+		w, ok := acc.Windows["seven_day"]
+		if !ok || w.ResetsAt.IsZero() {
+			continue
+		}
+		start := w.ResetsAt.Add(-7 * 24 * time.Hour)
+		elapsed := now.Sub(start)
+		for t := start; t.Before(now); t = t.Add(30 * time.Minute) {
+			f := float64(t.Sub(start)) / float64(elapsed)
+			pct := w.Utilization * f * f * (3 - 2*f)
+			a := acc
+			a.Windows = map[string]usageWindow{"seven_day": {Utilization: pct, ResetsAt: w.ResetsAt}}
+			history.add(a, t)
+		}
+	}
+	if os.Getenv("RS_SHADOW") != "" {
+		currentConfig.Store(pluginConfig{Shadow: true})
+	}
 	if err := os.WriteFile(out, renderPage("", now), 0o644); err != nil {
 		t.Fatal(err)
 	}

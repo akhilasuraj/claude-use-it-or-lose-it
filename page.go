@@ -25,6 +25,7 @@ const pageCSS = `
   --liquid-ok:#7fd9b5;--liquid-warm:#ffc46b;--liquid-hot:#ff8fab;
   --btn-ink:#2d2a26;--focus:#2d2a26;
   --blob-opacity:.34;
+  ` + chartTokensLight + `
 }
 /*DARK*/
 *{box-sizing:border-box}
@@ -83,6 +84,8 @@ html[data-busy] .btn.refresh .dot{animation:pulse 1s ease-in-out infinite altern
 /* ---- notices ---- */
 .notice{margin:14px 0 0;padding:10px 14px;border-radius:18px;background:var(--glass);border:1px solid var(--line)}
 .notice.bad{background:color-mix(in srgb,var(--pink) 35%,var(--glass))}
+.notice.shadow{background:color-mix(in srgb,var(--lavender) 35%,var(--glass))}
+.about code{font-size:12px;overflow-wrap:anywhere}
 
 /* ---- hero bubble ---- */
 .hero{display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;margin:18px 0;padding:20px;border-radius:32px;
@@ -212,14 +215,14 @@ const darkTokens = `
     --liquid-ok:#6fcfa8;--liquid-warm:#eeb257;--liquid-hot:#ee839d;
     --btn-ink:#151412;--focus:#f6f4f1;
     --blob-opacity:.14;
-`
+` + chartTokensDark
 
 // whiteTokens match the panel's "white" theme: pure white surfaces, same pastel accents.
 const whiteTokens = `
     --bg:#ffffff;--bg-2:#f6f6f6;
     --glass:rgb(255 255 255 / .7);--glass-strong:rgb(255 255 255 / .9);
     --line:rgb(0 0 0 / .1);--shadow:rgb(0 0 0 / .1);
-    --blob-opacity:.24;
+    --blob-opacity:.24;--surface:#ffffff;
 `
 
 // pageStyles is pageCSS with the dark palette wired to both the OS setting and data-theme,
@@ -228,7 +231,7 @@ var pageStyles = strings.Replace(pageCSS, "/*DARK*/",
 	"@media (prefers-color-scheme:dark){:root:not([data-theme]){"+darkTokens+"}}\n"+
 		":root[data-theme=\"dark\"]{color-scheme:dark;"+darkTokens+"}\n"+
 		":root[data-theme=\"light\"]{color-scheme:light}\n"+
-		":root[data-theme=\"white\"]{color-scheme:light;"+whiteTokens+"}\n", 1)
+		":root[data-theme=\"white\"]{color-scheme:light;"+whiteTokens+"}\n", 1) + chartCSS
 
 // themeJS runs in <head> before first paint so the page never flashes the wrong theme.
 // The page is served from the panel's origin, so it can read the panel's <html data-theme>
@@ -264,7 +267,7 @@ async function pull(url){
     const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
     const doc=new DOMParser().parseFromString(await r.text(),'text/html');
     const next=doc.getElementById('app');const focusId=document.activeElement&&document.activeElement.id;
-    if(next){document.getElementById('app').replaceWith(next);}
+    if(next){document.getElementById('app').replaceWith(next);if(window.bindCharts)window.bindCharts();}
     root.dataset.reload=doc.documentElement.dataset.reload||'60';
     const n=next&&next.querySelector('.notice');if(n&&live)live.textContent=n.textContent;
     if(focusId){const el=document.getElementById(focusId);if(el)el.focus();}
@@ -328,6 +331,10 @@ func renderPage(notice string, now time.Time) []byte {
 	for k, v := range stats.counts {
 		counts[k] = v
 	}
+	served := make(map[string]int64, len(stats.served))
+	for k, v := range stats.served {
+		served[k] = v
+	}
 	lastPickID, lastPickAt := stats.lastID, stats.lastAt
 	stats.mu.Unlock()
 
@@ -340,6 +347,16 @@ func renderPage(notice string, now time.Time) []byte {
 	}
 	ranked := rankCandidates(cands, accounts, cfg, now)
 	window := cfg.window()
+	paces := map[string]pace{}
+	cyclePoints := map[string][]point{}
+	for _, rc := range ranked {
+		acc := accounts[rc.id]
+		if w, ok := acc.Windows[window]; ok && w.ResetsAt.After(now) {
+			pts := history.cycle(historyKey(acc), window, w.ResetsAt)
+			cyclePoints[rc.id] = pts
+			paces[rc.id] = paceFor(pts, w, now)
+		}
+	}
 
 	reload := 60
 	if running || notice != "" {
@@ -350,25 +367,25 @@ func renderPage(notice string, now time.Time) []byte {
 	fmt.Fprintf(&b, `<!doctype html><html lang="en" data-reload="%d"><head><meta charset="utf-8">`, reload)
 	b.WriteString(`<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">`)
 	fmt.Fprintf(&b, `<noscript><meta http-equiv="refresh" content="%d;url=status"></noscript>`, reload)
-	b.WriteString(`<title>Reset Scheduler</title><script>` + themeJS + `</script><style>` + pageStyles + `</style></head><body>`)
+	b.WriteString(`<title>` + pluginTitle + `</title><script>` + themeJS + `</script><style>` + pageStyles + `</style></head><body>`)
 	b.WriteString(`<div class="blobs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>`)
 	b.WriteString(`<div id="live" class="sr-only" role="status" aria-live="polite"></div>`)
 	b.WriteString(`<main id="app">`)
 
 	// Sticky header.
-	b.WriteString(`<header class="bar"><div class="bar-inner"><div class="brand"><span class="logo" aria-hidden="true"></span><div><h1>Reset Scheduler</h1><div class="sub">`)
+	b.WriteString(`<header class="bar"><div class="bar-inner"><div class="brand"><span class="logo" aria-hidden="true"></span><div><h1>` + pluginTitle + `</h1><div class="sub">`)
 	switch {
 	case running:
-		b.WriteString(`Refreshing reset times…`)
+		b.WriteString(`Checking usage…`)
 	case lastRun.IsZero():
-		b.WriteString(`First refresh pending`)
+		b.WriteString(`First check pending`)
 	default:
 		fmt.Fprintf(&b, `Updated %s`, timeTag(lastRun, "data-ago", humanDuration(now.Sub(lastRun))+" ago"))
 		if !nextRun.IsZero() && nextRun.After(now) {
 			fmt.Fprintf(&b, ` · next %s`, timeTag(nextRun, "data-in", "in "+humanDuration(nextRun.Sub(now))))
 		}
 	}
-	fmt.Fprintf(&b, ` · every %s</div></div></div>`, humanDuration(cfg.interval()))
+	fmt.Fprintf(&b, ` · every %s, plus live updates from responses</div></div></div>`, humanDuration(cfg.interval()))
 	b.WriteString(`<div class="actions"><button type="button" id="info" class="btn ghost icon" popovertarget="about" aria-label="How it works">` + infoIcon + `</button>`)
 	b.WriteString(`<a id="refresh" class="btn refresh" href="status?action=refresh"><span class="dot" aria-hidden="true"></span>Refresh now</a></div>`)
 	b.WriteString(`</div></header>`)
@@ -377,7 +394,16 @@ func renderPage(notice string, now time.Time) []byte {
 		fmt.Fprintf(&b, `<p class="notice">%s</p>`, html.EscapeString(notice))
 	}
 	if lastErr != "" {
-		fmt.Fprintf(&b, `<p class="notice bad">Last refresh failed: %s</p>`, html.EscapeString(lastErr))
+		fmt.Fprintf(&b, `<p class="notice bad">Last check failed: %s</p>`, html.EscapeString(lastErr))
+	}
+	for _, rc := range ranked {
+		if acc := accounts[rc.id]; acc.LoginExpired {
+			fmt.Fprintf(&b, `<section class="notice bad login" aria-label="Login expired"><b>Login expired: %s.</b> Log in to this account again on the Auth Files page. Until then this plugin cannot read its usage.</section>`,
+				html.EscapeString(firstNonEmpty(acc.Label, acc.FileName, acc.ID)))
+		}
+	}
+	if cfg.Shadow {
+		b.WriteString(`<p class="notice shadow"><b>Watch only.</b> Requests use the normal routing. The page shows which account this plugin would pick, so you can compare before turning it on.</p>`)
 	}
 
 	// Hero: the account in use, i.e. the one the scheduler picks for every request right now.
@@ -387,7 +413,11 @@ func renderPage(notice string, now time.Time) []byte {
 		acc := accounts[top.id]
 		weekly := acc.Windows[window]
 		b.WriteString(bubbleHTML(weekly.Utilization, 120))
-		b.WriteString(`<div><span class="eyebrow">In use</span>`)
+		eyebrow := "In use"
+		if cfg.Shadow {
+			eyebrow = "Would pick"
+		}
+		fmt.Fprintf(&b, `<div><span class="eyebrow">%s</span>`, eyebrow)
 		fmt.Fprintf(&b, `<h2 id="next-title">%s</h2>`, html.EscapeString(firstNonEmpty(acc.Label, acc.FileName, acc.ID)))
 		fmt.Fprintf(&b, `<p>Weekly limit resets %s · %s</p>`,
 			timeTag(weekly.ResetsAt, "data-in", "in "+humanDuration(weekly.ResetsAt.Sub(now))),
@@ -397,12 +427,9 @@ func renderPage(notice string, now time.Time) []byte {
 		if fh, ok := acc.Windows["five_hour"]; ok {
 			fmt.Fprintf(&b, `<span class="chip">5-hour %.0f%% used</span>`, fh.Utilization)
 		}
-		n := counts[top.id]
-		word := "picks"
-		if n == 1 {
-			word = "pick"
+		if headline, _ := paceSummary(paces[top.id], now); headline != "" {
+			fmt.Fprintf(&b, `<span class="chip">%s</span>`, html.EscapeString(headline))
 		}
-		fmt.Fprintf(&b, `<span class="chip">%d %s</span>`, n, word)
 		b.WriteString(`</div></div>`)
 	} else {
 		b.WriteString(bubbleHTML(0, 120))
@@ -413,10 +440,14 @@ func renderPage(notice string, now time.Time) []byte {
 
 	// Order table.
 	b.WriteString(`<div class="table-wrap" tabindex="0" role="region" aria-labelledby="order-caption"><table>`)
-	fmt.Fprintf(&b, `<caption id="order-caption">Pick order · soonest <code>%s</code> reset first</caption>`, html.EscapeString(window))
-	b.WriteString(`<thead><tr><th scope="col">Account</th><th scope="col">Weekly reset</th><th scope="col">Weekly used</th><th scope="col">5-hour used</th><th scope="col">Picks</th><th scope="col">Status</th></tr></thead><tbody>`)
+	fmt.Fprintf(&b, `<caption id="order-caption">Pick order · soonest %s weekly reset first</caption>`, html.EscapeString(windowLabel(window)))
+	picksHead := "Picks"
+	if cfg.Shadow {
+		picksHead = "Would pick"
+	}
+	fmt.Fprintf(&b, `<thead><tr><th scope="col">Account</th><th scope="col">Weekly reset</th><th scope="col">Weekly used</th><th scope="col">At this pace</th><th scope="col">5-hour used</th><th scope="col">%s</th><th scope="col">Status</th></tr></thead><tbody>`, picksHead)
 	if len(ranked) == 0 {
-		b.WriteString(`<tr style="--i:0"><th scope="row" colspan="6">No enabled Claude accounts found yet.</th></tr>`)
+		b.WriteString(`<tr style="--i:0"><th scope="row" colspan="7">No enabled Claude accounts found yet.</th></tr>`)
 	}
 	for i, rc := range ranked {
 		acc := accounts[rc.id]
@@ -444,6 +475,17 @@ func renderPage(notice string, now time.Time) []byte {
 			b.WriteString(`<td data-label="Weekly used"><span class="meta">–</span></td>`)
 		}
 
+		if p, ok := paces[rc.id]; ok {
+			headline, detail := paceSummary(p, now)
+			if headline == "" {
+				fmt.Fprintf(&b, `<td data-label="At this pace"><span class="meta">%s</span></td>`, html.EscapeString(detail))
+			} else {
+				fmt.Fprintf(&b, `<td data-label="At this pace"><span><span class="pct">%s</span><span class="meta">%s</span></span></td>`, html.EscapeString(headline), html.EscapeString(detail))
+			}
+		} else {
+			b.WriteString(`<td data-label="At this pace"><span class="meta">–</span></td>`)
+		}
+
 		if fh, ok := acc.Windows["five_hour"]; ok {
 			reset := ""
 			if fh.ResetsAt.After(now) {
@@ -459,16 +501,20 @@ func renderPage(notice string, now time.Time) []byte {
 		if rc.id == lastPickID && !lastPickAt.IsZero() {
 			pickNote = `<span class="meta">last ` + timeTag(lastPickAt, "data-ago", humanDuration(now.Sub(lastPickAt))+" ago") + `</span>`
 		}
-		fmt.Fprintf(&b, `<td data-label="Picks"><span><span class="num">%d</span>%s</span></td>`, counts[rc.id], pickNote)
+		fmt.Fprintf(&b, `<td data-label="%s"><span><span class="num">%d</span><span class="meta">%d sent</span>%s</span></td>`, picksHead, counts[rc.id], served[rc.id], pickNote)
 
 		b.WriteString(`<td data-label="Status"><span>`)
 		switch {
+		case acc.LoginExpired:
+			b.WriteString(`<span class="pill bad">Login expired</span><span class="meta">log in again on the Auth Files page</span>`)
 		case acc.Error != "":
-			fmt.Fprintf(&b, `<span class="pill bad">Fetch failed</span><span class="meta">%s</span>`, html.EscapeString(acc.Error))
+			fmt.Fprintf(&b, `<span class="pill bad">Check failed</span><span class="meta">%s</span>`, html.EscapeString(acc.Error))
 		case rc.exhausted:
 			b.WriteString(`<span class="pill warn">Limit reached</span><span class="meta">moved to the bottom</span>`)
 		case !rc.hasReset:
 			b.WriteString(`<span class="pill idle">No reset data</span><span class="meta">ordered by priority</span>`)
+		case i == 0 && cfg.Shadow:
+			b.WriteString(`<span class="pill ok">Would pick</span>`)
 		case i == 0:
 			b.WriteString(`<span class="pill ok">In use</span>`)
 		case i == 1:
@@ -488,18 +534,55 @@ func renderPage(notice string, now time.Time) []byte {
 	}
 	b.WriteString(`</tbody></table></div>`)
 
+	// Weekly usage charts, in pick order.
+	var charts strings.Builder
+	for _, rc := range ranked {
+		acc := accounts[rc.id]
+		w, ok := acc.Windows[window]
+		if !ok || !w.ResetsAt.After(now) || acc.Error != "" {
+			continue
+		}
+		label := firstNonEmpty(acc.Label, acc.FileName, acc.ID)
+		headline, detail := paceSummary(paces[rc.id], now)
+		if headline == "" {
+			headline = fmt.Sprintf("%.0f%% used", w.Utilization)
+		}
+		fmt.Fprintf(&charts, `<figure class="chart-card"><figcaption><span class="name">%s</span><span class="meta">%s · resets %s</span><span class="meta">%s</span></figcaption>%s</figure>`,
+			breakableLabel(label), html.EscapeString(headline), html.EscapeString(w.ResetsAt.Local().Format("Mon 15:04")), html.EscapeString(detail),
+			renderChart(chartInput{Label: label, Window: w, Points: cyclePoints[rc.id], Pace: paces[rc.id], Now: now}))
+	}
+	if charts.Len() > 0 {
+		b.WriteString(`<section class="weeks" aria-labelledby="weeks-title"><h2 id="weeks-title">This week</h2>`)
+		b.WriteString(`<p>Solid line: measured usage. Dashed line: the same pace continued to the reset. The pink bracket is what would be left unused.</p>`)
+		b.WriteString(`<div class="charts">` + charts.String() + `</div></section>`)
+	}
+
 	b.WriteString(`</main>`)
 	// Secondary explanation, opened from the header's info button. It sits outside #app so the
 	// periodic in-place refresh never closes it; anchor-name on #info re-tethers it after a swap.
 	b.WriteString(`<div id="about" class="about" popover><h2>How it works</h2>`)
 	b.WriteString(`<p><b>How it picks.</b> The proxy offers only accounts it considers usable; rate-limited, cooling-down and disabled accounts are already left out. Of those, the one whose weekly limit resets soonest wins.</p>`)
-	b.WriteString(`<p><b>When it calls Anthropic.</b> Only on the timer, shortly after a stored reset passes, or when you press Refresh (at most once a minute). Picking an account never makes a network call. Picks count since the proxy started.</p>`)
-	b.WriteString(`<p><b>Settings.</b> Plugins page → reset-scheduler.</p>`)
+	b.WriteString(`<p><b>When it calls Anthropic.</b> Only on the timer, shortly after a stored reset passes, or when you press Refresh (at most once a minute). Picking an account never makes a network call. Between checks, the usage shown with every Claude response keeps the numbers current.</p>`)
+	b.WriteString(`<p><b>Cooldowns.</b> If the proxy is still holding back an account that a check shows has room again, for example after an early reset, the plugin clears that cooldown.</p>`)
+	b.WriteString(`<p><b>History.</b> Readings are kept for 15 days in <code>` + html.EscapeString(cfg.historyPath()) + `</code>. Picks and sent counts start at zero when the proxy starts.</p>`)
+	b.WriteString(`<p><b>Settings.</b> Plugins page → ` + pluginName + `.</p>`)
 	// switch is native in Safari; role="switch" plus our own styling covers other browsers.
 	b.WriteString(`<label class="setting"><span>Background motion<span class="meta">Also off when your system reduces motion.</span></span><input id="motion" type="checkbox" switch role="switch" checked></label>`)
 	b.WriteString(`</div>`)
-	b.WriteString(`<script>` + pageJS + `</script></body></html>`)
+	b.WriteString(`<script>` + chartJS + pageJS + `</script></body></html>`)
 	return b.Bytes()
+}
+
+// windowLabel is the display name of a weekly usage window.
+func windowLabel(key string) string {
+	switch key {
+	case "seven_day_opus":
+		return windowOpus
+	case "seven_day_sonnet":
+		return windowSonnet
+	default:
+		return "all-models"
+	}
 }
 
 func humanDuration(d time.Duration) string {

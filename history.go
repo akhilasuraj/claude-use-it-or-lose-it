@@ -251,6 +251,7 @@ func (h *historyStore) cycle(key, window string, resetsAt time.Time) []point {
 // pace describes how fast an account is using its weekly limit and where that leads.
 type pace struct {
 	Known     bool
+	Full      bool      // the limit is already reached
 	PerHour   float64   // percentage points per hour, averaged over the last day
 	Projected float64   // percent used at reset at the current pace, capped at 100
 	Unused    float64   // percent left over at reset at the current pace
@@ -266,6 +267,9 @@ func paceFor(points []point, cur usageWindow, now time.Time) pace {
 		return p
 	}
 	p.NeedPerHr = math.Max(0, 100-cur.Utilization) / left
+	if cur.Utilization >= 100 {
+		return pace{Known: true, Full: true, Projected: 100}
+	}
 	from := now.Add(-paceLookback)
 	var first *point
 	for i := range points {
