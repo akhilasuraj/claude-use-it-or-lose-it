@@ -1,0 +1,7 @@
+build/
+preview/
+*.dll
+*.so
+*.dylib
+*.h
+status*.html
