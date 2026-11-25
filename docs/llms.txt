@@ -1,0 +1,33 @@
+# Use It or Lose It
+
+> A free, MIT-licensed plugin (ID `claude-use-it-or-lose-it`) for CLIProxyAPI. For people with several Claude Pro or Max subscriptions logged into CLIProxyAPI, it sends each request to the Claude account whose weekly limit resets soonest, so quota that is about to reset gets used instead of wasted.
+
+How it works:
+
+- Accounts are ordered by weekly reset time, soonest first.
+- Accounts at 100% of their 5-hour or weekly limit move to the bottom.
+- Usage is checked with Anthropic every 30 minutes (never per request) and updated live from Anthropic's rate-limit response headers.
+- When an account has room again after an early reset, the proxy's cooldown for it is cleared.
+- With no usage data, CLIProxyAPI's normal routing is used.
+- Keeps 15 days of usage history and shows a status page in the CLIProxyAPI management panel: pick order, burn pace, how much would go unused at reset, weekly usage charts per account, and login-expired warnings.
+- Watch-only mode shows what it would pick without changing routing.
+- Runs on Windows, macOS and Linux (amd64 and arm64).
+- Privacy: talks only to Anthropic's usage endpoint at api.anthropic.com, using the OAuth token CLIProxyAPI already has. No telemetry.
+
+## Docs
+
+- [README](https://github.com/akhilasuraj/claude-use-it-or-lose-it/blob/main/README.md): installation, configuration and status page details
+- [Website](https://akhilasuraj.github.io/claude-use-it-or-lose-it/): overview, install steps and FAQ
+
+## Download
+
+- [Latest release](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest): zip files per platform; put the library in the CLIProxyAPI plugins folder and enable it under `plugins.configs.claude-use-it-or-lose-it` in config.yaml
+
+## Source
+
+- [GitHub repository](https://github.com/akhilasuraj/claude-use-it-or-lose-it): source code, issues
+- [License (MIT)](https://github.com/akhilasuraj/claude-use-it-or-lose-it/blob/main/LICENSE)
+
+## Optional
+
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI): the proxy this plugin runs in

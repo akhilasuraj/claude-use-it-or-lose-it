@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Use It or Lose It: Claude account routing for CLIProxyAPI</title>
+<meta name="description" content="Free MIT plugin for CLIProxyAPI. Sends each request to the Claude Pro or Max account whose weekly limit resets soonest, so quota gets used, not wasted.">
+<link rel="canonical" href="https://akhilasuraj.github.io/claude-use-it-or-lose-it/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d1b18" media="(prefers-color-scheme: dark)">
+<meta name="author" content="Akhila Abesinghe">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Use It or Lose It">
+<meta property="og:title" content="Use It or Lose It: Claude account routing for CLIProxyAPI">
+<meta property="og:description" content="Free MIT plugin for CLIProxyAPI. Sends each request to the Claude account whose weekly limit resets soonest, so quota gets used, not wasted.">
+<meta property="og:url" content="https://akhilasuraj.github.io/claude-use-it-or-lose-it/">
+<meta property="og:image" content="https://akhilasuraj.github.io/claude-use-it-or-lose-it/assets/screenshot-light.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="900">
+<meta property="og:image:alt" content="The plugin's status page: Claude accounts in pick order with weekly usage bubbles.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Use It or Lose It: Claude account routing for CLIProxyAPI">
+<meta name="twitter:description" content="Free MIT plugin for CLIProxyAPI. Sends each request to the Claude account whose weekly limit resets soonest.">
+<meta name="twitter:image" content="https://akhilasuraj.github.io/claude-use-it-or-lose-it/assets/screenshot-light.png">
+<meta name="twitter:image:alt" content="The plugin's status page: Claude accounts in pick order with weekly usage bubbles.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Use It or Lose It",
+  "alternateName": "claude-use-it-or-lose-it",
+  "description": "A CLIProxyAPI plugin that sends each request to the Claude account whose weekly limit resets soonest, so quota that is about to reset gets used instead of wasted.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "softwareVersion": "1.0.0",
+  "url": "https://akhilasuraj.github.io/claude-use-it-or-lose-it/",
+  "downloadUrl": "https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest",
+  "codeRepository": "https://github.com/akhilasuraj/claude-use-it-or-lose-it",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "screenshot": "https://akhilasuraj.github.io/claude-use-it-or-lose-it/assets/screenshot-light.png",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "Akhila Abesinghe", "url": "https://github.com/akhilasuraj" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Does it send my data anywhere?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. The only outside service it talks to is Anthropic's usage endpoint at api.anthropic.com, using the OAuth token CLIProxyAPI already has for each account. There is no telemetry." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it check usage on every request?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. It asks Anthropic for usage every 30 minutes. Between checks it updates from the rate-limit headers that come back on normal Claude responses." }
+    },
+    {
+      "@type": "Question",
+      "name": "What happens when an account is full?",
+      "acceptedAnswer": { "@type": "Answer", "text": "An account at 100% of its 5-hour or weekly limit moves to the bottom of the pick order. If its limit resets early and it has room again, the plugin clears the proxy's cooldown for that account." }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I try it without changing how requests are routed?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. Set \"Watch only, do not change routing\" to true. The status page then shows which account it would pick, and CLIProxyAPI keeps routing as before." }
+    },
+    {
+      "@type": "Question",
+      "name": "What if it has no usage data yet?",
+      "acceptedAnswer": { "@type": "Answer", "text": "It falls back to CLIProxyAPI's normal routing until usage data is available." }
+    },
+    {
+      "@type": "Question",
+      "name": "Which platforms does it run on?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Windows, macOS and Linux, on amd64 and arm64." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it free?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is open source under the MIT license." }
+    }
+  ]
+}
+</script>
+
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #faf9f5; --bg-2: #f0eee8;
+  --ink: #2d2a26; --muted: #625c55;
+  --glass: rgb(255 255 255 / .62); --glass-strong: rgb(255 255 255 / .86);
+  --line: rgb(45 42 38 / .11); --shadow: rgb(45 42 38 / .13);
+  --lavender: #c9b8ff; --mint: #a6ead0; --peach: #ffcfae; --pink: #ffb6ca; --sky: #b7dcff; --butter: #fff0a6;
+  --liquid-ok: #7fd9b5; --liquid-warm: #ffc46b; --liquid-hot: #ff8fab;
+  --btn-ink: #2d2a26; --focus: #2d2a26; --link: #5a43b8;
+  --code-bg: #2d2a26; --code-ink: #f6f4f1;
+  --blob-opacity: .34;
+  --font: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --spring: linear(0, .016 .5%, .06 1%, .226 2%, 1.116 5.4%, 1.375 6.6%, 1.527 7.7%, 1.565 8.2%, 1.585 8.8%, 1.581 9.3%, 1.559 9.8%, 1.458 10.9%, .937 14.3%, .784 15.5%, .693 16.6%, .67 17.1%, .657 17.7%, .671 18.7%, .729 19.8%, 1.042 23.3%, 1.13 24.5%, 1.182 25.6%, 1.201 26.7%, 1.192 27.7%, 1.156 28.8%, .977 32.2%, .925 33.4%, .894 34.5%, .882 35.6%, .887 36.6%, .907 37.7%, 1.045 42.4%, 1.069 44.5%, 1.059 46.3%, .979 50.9%, .96 53.4%, .966 55.3%, 1.013 59.9%, 1.024 62.3%, .986 71.2%, 1.008 79.9%, .995 88.9%, 1);
+  --wrap: 68rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1b18; --bg-2: #151412;
+    --ink: #f6f4f1; --muted: #c9c3bb;
+    --glass: rgb(42 39 35 / .7); --glass-strong: rgb(46 42 38 / .92);
+    --line: rgb(246 244 241 / .1); --shadow: rgb(0 0 0 / .42);
+    --lavender: #a898e0; --mint: #6fc7a4; --peach: #e3a27f; --pink: #e08ea4; --sky: #86afd8; --butter: #d6c46a;
+    --liquid-ok: #6fcfa8; --liquid-warm: #eeb257; --liquid-hot: #ee839d;
+    --btn-ink: #151412; --focus: #f6f4f1; --link: #cfc2ff;
+    --code-bg: #12110f;
+    --blob-opacity: .14;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  background: var(--bg-2);
+  scroll-padding-top: 6.5rem;
+  scrollbar-color: var(--lavender) transparent;
+}
+body {
+  margin: 0; min-height: 100dvh;
+  color: var(--ink);
+  background: linear-gradient(160deg, var(--bg), var(--bg-2));
+  font: 1rem/1.6 var(--font);
+  overflow-wrap: break-word;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: var(--link); text-underline-offset: .18em; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 12px; }
+h1, h2, h3 { line-height: 1.2; text-wrap: balance; margin: 0 0 .6em; letter-spacing: -.01em; }
+h2 { font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2.1rem); }
+h3 { font-size: 1.1rem; }
+p { margin: 0 0 1em; text-wrap: pretty; }
+code { font-family: var(--mono); font-size: .9em; background: var(--glass-strong); border: 1px solid var(--line); padding: .05em .4em; border-radius: 8px; }
+
+.skip { position: absolute; left: 1rem; top: -5rem; z-index: 20; background: var(--glass-strong); color: var(--ink); padding: .5rem 1rem; border-radius: 999px; }
+.skip:focus { top: 1rem; }
+
+/* Floating pastel blobs */
+.blobs { position: fixed; inset: 0; z-index: -1; overflow: clip; pointer-events: none; }
+.blobs i { position: absolute; border-radius: 50%; filter: blur(36px); opacity: var(--blob-opacity); }
+.blobs i:nth-child(1) { width: 340px; height: 340px; background: var(--lavender); top: -80px; left: -60px; --dx: 60px; --dy: 40px; --t: 26s; }
+.blobs i:nth-child(2) { width: 260px; height: 260px; background: var(--mint); top: 30%; right: -70px; --dx: -50px; --dy: 70px; --t: 31s; }
+.blobs i:nth-child(3) { width: 220px; height: 220px; background: var(--peach); bottom: -60px; left: 18%; --dx: 70px; --dy: -50px; --t: 23s; }
+.blobs i:nth-child(4) { width: 180px; height: 180px; background: var(--pink); top: 12%; left: 46%; --dx: -40px; --dy: 60px; --t: 35s; }
+.blobs i:nth-child(5) { width: 140px; height: 140px; background: var(--sky); bottom: 14%; right: 22%; --dx: 40px; --dy: -40px; --t: 28s; }
+@media (prefers-reduced-motion: no-preference) {
+  .blobs i { animation: drift var(--t) ease-in-out infinite alternate; }
+}
+@keyframes drift { to { translate: var(--dx) var(--dy); scale: 1.12; } }
+
+.wrap { width: min(100% - 2rem, var(--wrap)); margin-inline: auto; }
+section { padding-block: clamp(2.5rem, 1.75rem + 3.5vw, 4.5rem); }
+.lead { font-size: 1.125rem; color: var(--muted); max-width: 46rem; }
+.glass {
+  background: var(--glass); border: 1px solid var(--line); border-radius: 28px;
+  -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
+  box-shadow: 0 18px 40px -24px var(--shadow);
+}
+.chip { display: inline-block; font-size: .82rem; font-weight: 700; padding: .2rem .75rem; border-radius: 999px; background: var(--glass-strong); border: 1px solid var(--line); }
+.chip-mint { background: var(--mint); color: #1f3b30; border-color: transparent; letter-spacing: .08em; text-transform: uppercase; font-size: .75rem; font-weight: 800; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+
+/* Sticky glass header */
+.bar { position: sticky; top: 0; z-index: 10; container-type: scroll-state; container-name: bar; padding-top: 12px; }
+.bar-inner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem;
+  padding: .6rem .75rem .6rem 1rem; border-radius: 28px;
+  background: var(--glass); border: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
+  transition: box-shadow .3s, background-color .3s;
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .bar-inner, .glass { background: var(--glass-strong); }
+}
+@container bar scroll-state(stuck: top) {
+  .bar-inner { background: var(--glass-strong); box-shadow: 0 12px 32px -12px var(--shadow); }
+}
+.brand { display: flex; align-items: center; gap: .6rem; font-weight: 800; color: var(--ink); text-decoration: none; }
+.logo {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  background: conic-gradient(from 200deg, var(--lavender), var(--pink), var(--peach), var(--mint), var(--sky), var(--lavender));
+  box-shadow: inset 0 -6px 12px rgb(0 0 0 / .08), 0 6px 16px -6px var(--shadow);
+}
+.bar nav ul { display: flex; flex-wrap: wrap; gap: .1rem .25rem; list-style: none; margin: 0; padding: 0; font-size: .95rem; }
+.bar nav a { display: inline-block; padding: .3rem .65rem; border-radius: 999px; color: var(--ink); text-decoration: none; font-weight: 600; }
+.bar nav a:hover { background: var(--glass-strong); text-decoration: underline; }
+@media (max-width: 40rem) {
+  .bar-inner { flex-wrap: nowrap; padding-inline: .6rem .4rem; }
+  .bar nav li:is(:nth-child(1), :nth-child(2), :nth-child(4)) { display: none; }
+  .bar nav ul { flex-wrap: nowrap; }
+  .bar nav a { padding-inline: .5rem; }
+}
+@media (max-width: 22rem) { .brand { font-size: .9rem; gap: .4rem; white-space: nowrap; } .bar nav a { padding-inline: .3rem; font-size: .9rem; } .bar-inner { gap: .25rem; padding-inline: .5rem .3rem; } .logo { width: 28px; height: 28px; } }
+
+/* Buttons */
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-block: 1.75rem 1.25rem; }
+.btn {
+  appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 800; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  min-height: 48px; padding: .7rem 1.5rem; border-radius: 999px; color: var(--btn-ink);
+  background: linear-gradient(135deg, var(--lavender), var(--pink));
+  box-shadow: inset 0 2px 0 rgb(255 255 255 / .45), 0 8px 18px -8px var(--shadow);
+  transition: scale .3s ease-out;
+  transition-timing-function: var(--spring);
+}
+.btn.ghost { background: var(--glass-strong); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line), 0 8px 18px -10px var(--shadow); }
+.btn:hover { text-decoration: underline; text-underline-offset: .2em; }
+@media (prefers-reduced-motion: no-preference) {
+  .btn { transition-duration: .8s; }
+  .btn:hover { scale: 1.06; }
+  .btn:active { scale: .96; }
+}
+
+/* Liquid bubble gauge (decorative) */
+.bubble {
+  --size: 48px; --fill: 0%; --liquid: var(--liquid-ok);
+  position: relative; flex: none; display: block; width: var(--size); height: var(--size); border-radius: 50%; overflow: clip;
+  background: radial-gradient(circle at 50% 120%, color-mix(in srgb, var(--liquid) 18%, transparent), transparent 70%), var(--glass-strong);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--liquid) 55%, transparent), 0 8px 20px -10px var(--shadow);
+}
+.bubble::before, .bubble::after {
+  content: ""; position: absolute; left: 50%; width: 220%; aspect-ratio: 1;
+  top: calc(100% - var(--fill)); translate: -50% 0; border-radius: 42%;
+}
+.bubble::before { background: var(--liquid); opacity: .95; }
+.bubble::after { background: color-mix(in srgb, var(--liquid) 55%, white); opacity: .55; border-radius: 38%; top: calc(100% - var(--fill) - 3%); }
+@media (prefers-reduced-motion: no-preference) {
+  .bubble::before { animation: wave 7s linear infinite; }
+  .bubble::after { animation: wave 11s linear infinite reverse; }
+}
+@keyframes wave { to { rotate: 360deg; } }
+.tone-warm { --liquid: var(--liquid-warm); }
+.tone-hot { --liquid: var(--liquid-hot); }
+
+/* Hero */
+.hero { padding-top: clamp(2rem, 1rem + 4vw, 4rem); }
+.hero-grid { display: grid; gap: 2rem; align-items: center; }
+@media (min-width: 56rem) { .hero-grid { grid-template-columns: minmax(0, 1fr) auto; } }
+.hero h1 { font-size: clamp(2rem, 1.3rem + 3vw, 3.4rem); letter-spacing: -.02em; max-width: 20ch; margin-top: .9rem; }
+.hero .lead { font-size: clamp(1.08rem, 1rem + .4vw, 1.28rem); }
+.hero-bubbles { display: none; position: relative; width: 17rem; height: 15rem; }
+@media (min-width: 56rem) { .hero-bubbles { display: block; } }
+.hero-bubbles .bubble { position: absolute; }
+.hero-bubbles .bubble:nth-child(1) { --size: 170px; left: 0; top: 0; }
+.hero-bubbles .bubble:nth-child(2) { --size: 96px; right: 0; top: 4.5rem; }
+.hero-bubbles .bubble:nth-child(3) { --size: 70px; left: 7.5rem; bottom: 0; }
+
+.shot { margin: clamp(2rem, 1rem + 3vw, 3.25rem) 0 0; padding: clamp(.5rem, .3rem + 1vw, .9rem); border-radius: 32px; }
+.shot picture img { width: 100%; aspect-ratio: 4 / 3; border-radius: 24px; background: var(--bg); }
+.shot figcaption { font-size: .9rem; color: var(--muted); margin: .7rem 0 .2rem; text-align: center; }
+
+/* Problem */
+.panel { padding: clamp(1.4rem, 1rem + 2.5vw, 2.75rem); border-radius: 32px; }
+.split { display: grid; gap: 2rem; align-items: center; }
+@media (min-width: 52rem) { .split { grid-template-columns: 1.2fr 1fr; gap: 3rem; } }
+.gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(.5rem, 3vw, 1.5rem); margin: 0; padding: 0; list-style: none; }
+.gauges li { display: grid; justify-items: center; align-content: start; gap: .6rem; text-align: center; color: var(--muted); font-size: clamp(.8rem, .75rem + .3vw, .92rem); }
+.gauges .bubble { --size: clamp(4.25rem, 17vw, 6.5rem); }
+.gauges strong { display: block; color: var(--ink); }
+
+/* Rules */
+.rules { counter-reset: rule; list-style: none; padding: 0; margin: 2rem 0 0; display: grid; gap: 1rem; }
+.rules li { counter-increment: rule; position: relative; padding: 1.25rem 1.25rem 1.25rem 4.4rem; border-radius: 24px; }
+.rules li::before {
+  content: counter(rule); position: absolute; left: 1.1rem; top: 1.05rem;
+  width: 2.4rem; height: 2.4rem; border-radius: 50%; display: grid; place-items: center;
+  font-weight: 800; color: #2d2a26; background: var(--lavender);
+  box-shadow: inset 0 2px 0 rgb(255 255 255 / .45);
+}
+.rules li:nth-child(2)::before { background: var(--peach); }
+.rules li:nth-child(3)::before { background: var(--mint); }
+.rules li:nth-child(4)::before { background: var(--sky); }
+.rules p { margin: 0; color: var(--muted); }
+.rules strong { color: var(--ink); }
+
+/* Features */
+.grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15.5rem), 1fr)); margin-top: 2rem; }
+.card { padding: 1.4rem; border-radius: 28px; }
+.card .bubble { --size: 44px; margin-bottom: .9rem; }
+.card p { margin: 0; color: var(--muted); }
+
+/* Install */
+.steps { list-style: none; padding: 0; margin: 2rem 0 0; display: grid; gap: 1rem; counter-reset: step; }
+.steps > li { counter-increment: step; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1rem; padding: 1.25rem; border-radius: 28px; }
+.steps > li::before {
+  content: counter(step); width: 2.5rem; height: 2.5rem; border-radius: 50%; display: grid; place-items: center;
+  font-weight: 800; color: #2d2a26; background: var(--mint); box-shadow: inset 0 2px 0 rgb(255 255 255 / .45);
+}
+.steps h3 { margin: .45rem 0 .4rem; }
+.steps p { color: var(--muted); }
+.steps p:last-child { margin-bottom: 0; }
+.code { position: relative; margin-top: .75rem; }
+@media (max-width: 40rem) { .code { margin-inline-start: -3.5rem; } }
+.code pre {
+  margin: 0; background: var(--code-bg); color: var(--code-ink); border-radius: 22px;
+  padding: 3rem 1.25rem 1.1rem; overflow-x: auto; font: .88rem/1.6 var(--mono); tab-size: 2;
+}
+.code pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.code .label { position: absolute; left: 1.25rem; top: .95rem; font: 700 .78rem var(--mono); color: #c9c3bb; }
+.copy { position: absolute; right: .6rem; top: .55rem; display: flex; align-items: center; gap: .5rem; }
+.copy-button {
+  min-inline-size: 24px; min-block-size: 32px; padding: .3rem .9rem; border-radius: 999px; cursor: pointer; border: 0;
+  font: 800 .82rem var(--font); color: #2d2a26; background: linear-gradient(135deg, #c9b8ff, #ffb6ca);
+  box-shadow: inset 0 2px 0 rgb(255 255 255 / .45);
+}
+.copy-button[data-copied] { background: #a6ead0; }
+.copy-button[data-failed] { background: #ffb6ca; }
+.copy-button:focus-visible { outline-color: #f6f4f1; }
+.tip { font-size: .8rem; color: var(--code-ink); opacity: 0; transition: opacity .2s; order: -1; }
+.copy-button[data-copied] + .tip, .copy-button[data-failed] + .tip { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+
+/* Privacy */
+.privacy ul { margin: 0; padding-left: 1.2rem; color: var(--muted); }
+.privacy li + li { margin-top: .4rem; }
+
+/* FAQ */
+.faq { display: grid; gap: .75rem; margin-top: 2rem; max-width: 50rem; }
+.faq details { border-radius: 24px; }
+.faq summary {
+  list-style: none; display: flex; align-items: center; gap: .75ch;
+  padding: 1rem 1.25rem; font-weight: 800; cursor: pointer; border-radius: 24px;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before {
+  content: ""; flex: none; width: .65em; height: .65em;
+  border-right: 2.5px solid currentColor; border-bottom: 2.5px solid currentColor;
+  rotate: -45deg; translate: 0 -.05em;
+}
+.faq details[open] > summary::before { rotate: 45deg; translate: 0 -.2em; }
+.faq summary:hover { background: var(--glass-strong); }
+.faq details p { margin: 0; padding: 0 1.25rem 1.15rem 2.6rem; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .faq summary::before { transition: rotate .3s var(--spring), translate .3s; }
+}
+
+/* Footer */
+.site-footer { padding-block: 1rem 2.5rem; font-size: .92rem; color: var(--muted); }
+.site-footer .glass { padding: 1.5rem; display: grid; gap: .9rem; }
+.site-footer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; }
+.site-footer p { margin: 0; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="blobs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+
+<header class="bar">
+  <div class="wrap">
+    <div class="bar-inner">
+      <a class="brand" href="./">
+        <span class="logo" aria-hidden="true"></span>
+        <span>Use It or Lose It</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li><a href="#how">How it picks</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="title">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div>
+          <span class="chip chip-mint">Free plugin for CLIProxyAPI</span>
+          <h1 id="title">Use your Claude quota before it resets, with one CLIProxyAPI plugin</h1>
+          <p class="lead">If you have several Claude Pro or Max subscriptions logged into CLIProxyAPI, Use It or Lose It sends each request to the account whose weekly limit resets soonest, so quota that is about to reset gets used instead of wasted.</p>
+          <div class="actions">
+            <a class="btn" href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest">Download</a>
+            <a class="btn ghost" href="https://github.com/akhilasuraj/claude-use-it-or-lose-it">View on GitHub</a>
+          </div>
+          <ul class="chips" aria-label="Release details">
+            <li class="chip">Version 1.0.0</li>
+            <li class="chip">MIT license</li>
+            <li class="chip">Windows, macOS, Linux</li>
+            <li class="chip">amd64 and arm64</li>
+          </ul>
+        </div>
+        <div class="hero-bubbles" aria-hidden="true">
+          <span class="bubble" style="--fill:42%"></span>
+          <span class="bubble tone-warm" style="--fill:68%"></span>
+          <span class="bubble tone-hot" style="--fill:88%"></span>
+        </div>
+      </div>
+
+      <figure class="shot glass" id="screenshot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.webp" type="image/webp">
+          <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.png">
+          <source srcset="assets/screenshot-light.webp" type="image/webp">
+          <img src="assets/screenshot-light.png" width="1200" height="900" fetchpriority="high"
+               alt="The plugin's status page in the CLIProxyAPI management panel. Four Claude accounts are listed in pick order with their weekly reset time, weekly usage, burn pace, 5-hour usage and status. One account shows a login-expired warning and one has reached its limit and was moved to the bottom.">
+        </picture>
+        <figcaption>The status page inside the CLIProxyAPI management panel (example data).</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="problem" aria-labelledby="problem-title">
+    <div class="wrap">
+      <div class="panel glass split">
+        <div>
+          <h2 id="problem-title">Weekly limits reset on different days</h2>
+          <p>Each Claude subscription has its own weekly limit, and each one resets on its own schedule. Whatever an account has not used by its reset is gone.</p>
+          <p>A proxy that spreads requests evenly, or always starts with the same account, does not know which account is about to reset. It can drain an account that still has days left while another account resets with most of its week unused.</p>
+          <p>Use It or Lose It orders your accounts by reset time, so the quota that expires first is spent first.</p>
+        </div>
+        <ul class="gauges" aria-label="Example: three accounts with different reset times">
+          <li><span class="bubble" style="--fill:30%" aria-hidden="true"></span><span><strong>Resets tomorrow</strong>use this first</span></li>
+          <li><span class="bubble tone-warm" style="--fill:60%" aria-hidden="true"></span><span><strong>Resets in 4 days</strong>next</span></li>
+          <li><span class="bubble tone-hot" style="--fill:100%" aria-hidden="true"></span><span><strong>Full</strong>moved to the bottom</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">How it picks an account</h2>
+      <p class="lead">For every request to a Claude model, the plugin puts your Claude accounts in this order:</p>
+      <ol class="rules">
+        <li class="glass"><p><strong>Soonest weekly reset first.</strong> The account whose weekly limit resets next goes to the top, so its remaining quota is used before it expires.</p></li>
+        <li class="glass"><p><strong>Full accounts go to the bottom.</strong> An account at 100% of its 5-hour or weekly limit is moved below every account that still has room.</p></li>
+        <li class="glass"><p><strong>Accounts with room again come back.</strong> If a limit resets early, the plugin clears the proxy's cooldown for that account so it can be picked again.</p></li>
+        <li class="glass"><p><strong>No data, no change.</strong> If there is no usage data, CLIProxyAPI's normal routing is used.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <h2 id="features-title">Features</h2>
+      <div class="grid">
+        <article class="card glass"><span class="bubble" style="--fill:35%" aria-hidden="true"></span><h3>Reset-aware routing</h3><p>Sends each request to the Claude account whose weekly limit resets soonest.</p></article>
+        <article class="card glass"><span class="bubble tone-warm" style="--fill:55%" aria-hidden="true"></span><h3>Light on Anthropic's API</h3><p>Checks usage every 30 minutes, never per request, and updates live from Anthropic's rate-limit response headers.</p></article>
+        <article class="card glass"><span class="bubble tone-hot" style="--fill:100%" aria-hidden="true"></span><h3>Full accounts wait</h3><p>Accounts that hit their 5-hour or weekly limit move to the bottom until they have room again.</p></article>
+        <article class="card glass"><span class="bubble" style="--fill:15%" aria-hidden="true"></span><h3>Cooldowns cleared</h3><p>When an account has room again after an early reset, the proxy's cooldown for it is cleared.</p></article>
+        <article class="card glass"><span class="bubble" style="--fill:48%" aria-hidden="true"></span><h3>Status page</h3><p>Inside the CLIProxyAPI management panel: pick order, burn pace, and how much would go unused at reset.</p></article>
+        <article class="card glass"><span class="bubble tone-warm" style="--fill:70%" aria-hidden="true"></span><h3>15 days of history</h3><p>Weekly usage charts for each account, plus a warning when an account's login has expired.</p></article>
+        <article class="card glass"><span class="bubble" style="--fill:25%" aria-hidden="true"></span><h3>Watch-only mode</h3><p>See which account it would pick without changing how requests are routed.</p></article>
+        <article class="card glass"><span class="bubble" style="--fill:60%" aria-hidden="true"></span><h3>Safe fallback</h3><p>With no usage data, CLIProxyAPI routes requests the way it normally does.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="install-title">
+    <div class="wrap">
+      <h2 id="install-title">Install in 3 steps</h2>
+      <p class="lead">You need CLIProxyAPI with plugins enabled and at least one Claude account logged in.</p>
+      <ol class="steps">
+        <li class="glass">
+          <div>
+            <h3>Download</h3>
+            <p>Get the zip for your platform from the <a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest">latest GitHub release</a>. Builds are available for Windows, macOS and Linux, on amd64 and arm64.</p>
+          </div>
+        </li>
+        <li class="glass">
+          <div>
+            <h3>Copy the library into your plugins folder</h3>
+            <p>Unzip it and put the library file (<code>claude-use-it-or-lose-it.dll</code>, <code>.so</code> or <code>.dylib</code>) in the folder set by <code>plugins.dir</code> in your CLIProxyAPI <code>config.yaml</code>.</p>
+          </div>
+        </li>
+        <li class="glass">
+          <div>
+            <h3>Enable it in config.yaml</h3>
+            <p>Add the plugin under <code>plugins.configs.claude-use-it-or-lose-it</code>, then restart CLIProxyAPI. The status page appears in the management panel.</p>
+            <div class="code">
+              <span class="label">config.yaml</span>
+              <span class="copy">
+                <button type="button" class="copy-button" command="--copy" commandfor="config-snippet" aria-label="Copy config.yaml snippet">Copy</button>
+                <span class="tip" role="status"></span>
+              </span>
+<pre tabindex="0" aria-label="config.yaml example"><code id="config-snippet">plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    claude-use-it-or-lose-it:
+      enabled: true
+      priority: 1
+      "Check usage every (minutes)": 30
+      "Weekly limit to order by": "All models"
+      "Move full accounts to the bottom": true
+      "Watch only, do not change routing": false
+      "Folder for usage history": ""</code></pre>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <div class="panel glass privacy">
+        <h2 id="privacy-title">Privacy</h2>
+        <ul>
+          <li>The only outside service it talks to is Anthropic's usage endpoint at <code>api.anthropic.com</code>.</li>
+          <li>It uses the OAuth token CLIProxyAPI already has for each account. You do not enter any new credentials.</li>
+          <li>No telemetry. Usage history stays on your machine.</li>
+          <li>The source code is public on <a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it">GitHub</a>.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="faq-title">
+    <div class="wrap">
+      <h2 id="faq-title">Frequently asked questions</h2>
+      <div class="faq">
+        <details class="glass">
+          <summary>Does it send my data anywhere?</summary>
+          <p>No. The only outside service it talks to is Anthropic's usage endpoint at api.anthropic.com, using the OAuth token CLIProxyAPI already has for each account. There is no telemetry.</p>
+        </details>
+        <details class="glass">
+          <summary>Does it check usage on every request?</summary>
+          <p>No. It asks Anthropic for usage every 30 minutes. Between checks it updates from the rate-limit headers that come back on normal Claude responses.</p>
+        </details>
+        <details class="glass">
+          <summary>What happens when an account is full?</summary>
+          <p>An account at 100% of its 5-hour or weekly limit moves to the bottom of the pick order. If its limit resets early and it has room again, the plugin clears the proxy's cooldown for that account.</p>
+        </details>
+        <details class="glass">
+          <summary>Can I try it without changing how requests are routed?</summary>
+          <p>Yes. Set "Watch only, do not change routing" to true. The status page then shows which account it would pick, and CLIProxyAPI keeps routing as before.</p>
+        </details>
+        <details class="glass">
+          <summary>What if it has no usage data yet?</summary>
+          <p>It falls back to CLIProxyAPI's normal routing until usage data is available.</p>
+        </details>
+        <details class="glass">
+          <summary>Which platforms does it run on?</summary>
+          <p>Windows, macOS and Linux, on amd64 and arm64.</p>
+        </details>
+        <details class="glass">
+          <summary>Is it free?</summary>
+          <p>Yes. It is open source under the MIT license.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="glass">
+      <ul>
+        <li><a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it">Source code</a></li>
+        <li><a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest">Releases</a></li>
+        <li><a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/issues">Issues</a></li>
+        <li><a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/blob/main/LICENSE">MIT license</a></li>
+        <li><a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a></li>
+      </ul>
+      <p>Made by <a href="https://github.com/akhilasuraj">Akhila Abesinghe</a>. Released under the MIT license.</p>
+      <p>An independent open-source project. Not affiliated with or endorsed by Anthropic. Claude is a trademark of Anthropic.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const timers = new WeakMap();
+  function report(button, ok) {
+    const tip = button.nextElementSibling;
+    clearTimeout(timers.get(button));
+    button.removeAttribute('data-copied');
+    button.removeAttribute('data-failed');
+    tip.textContent = '';
+    void button.offsetWidth;
+    button.setAttribute(ok ? 'data-copied' : 'data-failed', '');
+    requestAnimationFrame(() => (tip.textContent = ok ? 'Copied' : 'Copy failed'));
+    timers.set(button, setTimeout(() => {
+      button.removeAttribute('data-copied');
+      button.removeAttribute('data-failed');
+      tip.textContent = '';
+    }, 2000));
+  }
+  async function copy(button, target) {
+    const text = target.innerText.trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      report(button, true);
+    } catch {
+      report(button, false);
+    }
+  }
+  if ('CommandEvent' in window) {
+    document.addEventListener('command', (event) => {
+      if (event.command === '--copy') copy(event.source, event.target);
+    }, true);
+  } else {
+    document.addEventListener('click', (event) => {
+      if (event.defaultPrevented) return;
+      const button = event.target.closest('button[command="--copy"]');
+      if (!button) return;
+      const target = document.getElementById(button.getAttribute('commandfor'));
+      if (target) copy(button, target);
+    });
+  }
+})();
+</script>
+</body>
+</html>

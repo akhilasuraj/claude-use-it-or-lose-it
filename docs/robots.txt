@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://akhilasuraj.github.io/claude-use-it-or-lose-it/sitemap.xml
