@@ -187,14 +187,52 @@ func TestHistoryBucketsAndPersistence(t *testing.T) {
 	}
 }
 
-func TestLoginExpiredAndRoom(t *testing.T) {
-	if !isLoginExpired("usage endpoint returned HTTP 401", "active", "") {
-		t.Fatal("HTTP 401 means the login expired")
+func TestTokenStale(t *testing.T) {
+	now := time.Date(2026, 11, 26, 21, 32, 9, 0, time.FixedZone("", 5*3600+1800))
+	if !tokenStale("2026-11-26T21:32:00+05:30", now) {
+		t.Fatal("an expired token is stale")
 	}
-	if !isLoginExpired("x", "error", "refresh token: invalid_grant") {
+	if !tokenStale("2026-11-26T21:32:30+05:30", now) {
+		t.Fatal("a token expiring within the slack is stale")
+	}
+	if tokenStale("2026-11-27T05:32:16+05:30", now) {
+		t.Fatal("a fresh token is not stale")
+	}
+	if tokenStale("", now) || tokenStale("garbage", now) {
+		t.Fatal("an unknown expiry counts as fresh")
+	}
+}
+
+func TestHeadersClearLoginExpired(t *testing.T) {
+	state.mu.Lock()
+	saved := state.accounts
+	state.accounts = map[string]accountState{"a": {ID: "a", Label: "a@example.com", Error: "usage endpoint returned HTTP 401", FailCount: 2, LoginExpired: true}}
+	state.mu.Unlock()
+	defer func() { state.mu.Lock(); state.accounts = saved; state.mu.Unlock() }()
+	applyHeaderWindows("a", map[string]usageWindow{"five_hour": {Utilization: 10}}, time.Now())
+	got := snapshotAccounts()["a"]
+	if got.LoginExpired || got.Error != "" || got.FailCount != 0 {
+		t.Fatalf("a served request should clear the expired flag, got %+v", got)
+	}
+}
+
+func TestLoginExpiredAndRoom(t *testing.T) {
+	if isLoginExpired("usage endpoint returned HTTP 401", 1, "active", "") {
+		t.Fatal("a single HTTP 401 may be a token the proxy is about to renew")
+	}
+	if !isLoginExpired("usage endpoint returned HTTP 401", 2, "active", "") {
+		t.Fatal("HTTP 401 on consecutive checks means the login expired")
+	}
+	if isLoginExpired(errTokenRenewing.Error(), 3, "active", "") {
+		t.Fatal("a token waiting for renewal is not an expired login yet")
+	}
+	if !isLoginExpired(errTokenRenewing.Error(), renewingChecks, "active", "") {
+		t.Fatal("a token that is never renewed means the login expired")
+	}
+	if !isLoginExpired("x", 1, "error", "refresh token: invalid_grant") {
 		t.Fatal("invalid_grant means the login expired")
 	}
-	if isLoginExpired("usage endpoint returned HTTP 429", "active", "") {
+	if isLoginExpired("usage endpoint returned HTTP 429", 5, "active", "") {
 		t.Fatal("a rate limit is not an expired login")
 	}
 	now := time.Now()

@@ -100,7 +100,7 @@ func applyHeaderWindows(authID string, windows map[string]usageWindow, at time.T
 	}
 	acc.Windows = mergeWindows(acc.Windows, windows)
 	// A served request proves the credential works, so a stale fetch error no longer applies.
-	acc.Error = ""
+	acc.Error, acc.FailCount, acc.LoginExpired = "", 0, false
 	if at.After(acc.HeadersAt) {
 		acc.HeadersAt = at
 	}

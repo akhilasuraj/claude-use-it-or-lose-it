@@ -496,6 +496,8 @@ func renderPage(notice string, now time.Time) []byte {
 		switch {
 		case acc.LoginExpired:
 			b.WriteString(`<span class="pill bad">Login expired</span><span class="meta">log in again on the Auth Files page</span>`)
+		case acc.Error == errTokenRenewing.Error():
+			b.WriteString(`<span class="pill idle">Renewing login</span><span class="meta">the proxy renews it, checking again soon</span>`)
 		case acc.Error != "":
 			fmt.Fprintf(&b, `<span class="pill bad">Check failed</span><span class="meta">%s</span>`, html.EscapeString(acc.Error))
 		case rc.exhausted:

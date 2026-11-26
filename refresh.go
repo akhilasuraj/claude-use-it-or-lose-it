@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,17 @@ const (
 	cooldownClearEvery = 30 * time.Minute
 	usageUserAgent     = "claude-cli/2.1.280 (external, cli)"
 	usageAnthropicBet  = "oauth-2025-04-20"
+	retryAfterError    = 2 * time.Minute  // a failed check is retried this soon
+	tokenRenewSlack    = 30 * time.Second // a token this close to expiry is left for the proxy to renew
+	// A login is reported expired only after this many failed checks in a row, so a token the
+	// proxy is about to renew (for example right after the computer wakes up) is not flagged.
+	unauthorizedChecks = 2
+	renewingChecks     = 8 // about 15 minutes of retries
 )
+
+// errTokenRenewing means the stored access token has expired and the proxy has not renewed it
+// yet. The proxy renews tokens itself; the plugin waits instead of using a dead token.
+var errTokenRenewing = errors.New("waiting for the proxy to renew the login")
 
 // usageWindow is one quota window from Anthropic's OAuth usage endpoint.
 type usageWindow struct {
@@ -47,6 +58,7 @@ type accountState struct {
 	FetchedAt     time.Time // last successful usage check
 	HeadersAt     time.Time // last update from response headers
 	Error         string
+	FailCount     int // failed usage checks in a row
 	LoginExpired  bool
 	Windows       map[string]usageWindow
 }
@@ -157,6 +169,11 @@ func (r *refresher) nextWait(now time.Time) time.Duration {
 			}
 		}
 	}
+	for _, acc := range r.accounts {
+		if acc.FailCount > 0 && !acc.Disabled && retryAfterError < wait {
+			wait = retryAfterError
+		}
+	}
 	if wait < minWake {
 		wait = minWake
 	}
@@ -210,7 +227,11 @@ func (r *refresher) refreshAll() {
 		windows, errFetch := fetchUsage(e.AuthIndex)
 		if errFetch != nil {
 			acc.Error = errFetch.Error()
-			acc.LoginExpired = isLoginExpired(acc.Error, e.Status, e.StatusMsg)
+			acc.FailCount = 1
+			if hadPrev {
+				acc.FailCount = prev.FailCount + 1
+			}
+			acc.LoginExpired = isLoginExpired(acc.Error, acc.FailCount, e.Status, e.StatusMsg)
 			// Keep the previous readings so one failed check does not reshuffle routing.
 			if hadPrev {
 				acc.Windows = prev.Windows
@@ -238,9 +259,8 @@ func (r *refresher) refreshAll() {
 		if cur, ok := r.accounts[id]; ok && cur.HeadersAt.After(acc.HeadersAt) {
 			acc.Windows = mergeWindows(acc.Windows, cur.Windows)
 			acc.HeadersAt = cur.HeadersAt
-			if !acc.LoginExpired {
-				acc.Error = ""
-			}
+			// A request was served while this check ran, so the login works.
+			acc.Error, acc.FailCount, acc.LoginExpired = "", 0, false
 			next[id] = acc
 		}
 	}
@@ -300,8 +320,16 @@ func hasRoom(acc accountState, weekly string, now time.Time) bool {
 }
 
 // isLoginExpired recognises a credential that needs a new login, as opposed to a passing error.
-func isLoginExpired(fetchErr, status, statusMessage string) bool {
-	if strings.Contains(fetchErr, "HTTP 401") || strings.Contains(fetchErr, "no access_token") {
+// failCount is the number of failed checks in a row, including this one. A rejected or expired
+// token alone is not enough at first: the proxy renews tokens on its own schedule, and right
+// after the computer wakes up the stored token can be stale for a few seconds.
+func isLoginExpired(fetchErr string, failCount int, status, statusMessage string) bool {
+	switch {
+	case strings.Contains(fetchErr, "no access_token"):
+		return true
+	case strings.Contains(fetchErr, "HTTP 401") && failCount >= unauthorizedChecks:
+		return true
+	case fetchErr == errTokenRenewing.Error() && failCount >= renewingChecks:
 		return true
 	}
 	if !strings.EqualFold(status, "error") {
@@ -377,9 +405,13 @@ func fetchUsage(authIndex string) (map[string]usageWindow, error) {
 	}
 	var cred struct {
 		AccessToken string `json:"access_token"`
+		Expired     string `json:"expired"`
 	}
 	if err := json.Unmarshal(got.JSON, &cred); err != nil || strings.TrimSpace(cred.AccessToken) == "" {
 		return nil, fmt.Errorf("credential has no access_token")
+	}
+	if tokenStale(cred.Expired, time.Now()) {
+		return nil, errTokenRenewing
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
@@ -411,6 +443,13 @@ func fetchUsage(authIndex string) (map[string]usageWindow, error) {
 		windows[k] = w
 	}
 	return windows, nil
+}
+
+// tokenStale reports whether the credential's access token has expired or is about to. An
+// unknown or unreadable expiry counts as fresh, so the usage endpoint decides.
+func tokenStale(expired string, now time.Time) bool {
+	exp, err := time.Parse(time.RFC3339, strings.TrimSpace(expired))
+	return err == nil && now.Add(tokenRenewSlack).After(exp)
 }
 
 func parseUsage(body []byte) (map[string]usageWindow, error) {

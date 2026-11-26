@@ -19,7 +19,7 @@ import (
 const (
 	pluginName      = "claude-use-it-or-lose-it"
 	pluginTitle     = "Use It or Lose It"
-	pluginVersion   = "1.0.0"
+	pluginVersion   = "1.0.1"
 	resourcePath    = "/status"
 	claudeProvider  = "claude"
 	defaultInterval = 30
