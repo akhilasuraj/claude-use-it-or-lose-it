@@ -19,7 +19,7 @@ import (
 const (
 	pluginName      = "claude-use-it-or-lose-it"
 	pluginTitle     = "Use It or Lose It"
-	pluginVersion   = "1.0.2"
+	pluginVersion   = "1.1.0"
 	resourcePath    = "/status"
 	claudeProvider  = "claude"
 	defaultInterval = 30
@@ -27,30 +27,25 @@ const (
 )
 
 // Config keys double as the labels the management panel shows (it has no separate label
-// field), so they are written as plain sentence-case text. The legacy snake_case keys and
-// values are still accepted so older config.yaml files keep working.
+// field), so they are written as plain sentence-case text. The legacy snake_case keys are
+// still accepted so older config.yaml files keep working. The former "Weekly limit to order by"
+// (weekly_window) setting is ignored: Claude plans no longer have separate Opus or Sonnet
+// weekly limits, so accounts are always ordered by the all-models weekly limit.
 const (
 	keyInterval     = "Check usage every (minutes)"
-	keyWindow       = "Weekly limit to order by"
 	keyDeprioritize = "Move full accounts to the bottom"
 	keyShadow       = "Watch only, do not change routing"
 	keyHistoryDir   = "Folder for usage history"
-
-	windowAll    = "All models"
-	windowOpus   = "Opus"
-	windowSonnet = "Sonnet"
 )
 
 var legacyKeys = map[string]string{
 	keyInterval:     "refresh_interval_minutes",
-	keyWindow:       "weekly_window",
 	keyDeprioritize: "deprioritize_exhausted",
 }
 
 // pluginConfig mirrors plugins.configs.reset-scheduler in config.yaml.
 type pluginConfig struct {
 	RefreshIntervalMinutes int
-	WeeklyWindow           string // usage API window key: seven_day, seven_day_opus, seven_day_sonnet
 	DeprioritizeExhausted  *bool
 	Shadow                 bool
 	HistoryDir             string
@@ -80,9 +75,6 @@ func parseConfig(data []byte) (pluginConfig, error) {
 			fmt.Sscanf(strings.TrimSpace(n), "%d", &cfg.RefreshIntervalMinutes)
 		}
 	}
-	if v, ok := get(keyWindow); ok {
-		cfg.WeeklyWindow = windowKey(fmt.Sprint(v))
-	}
 	if v, ok := get(keyDeprioritize); ok {
 		var b bool
 		switch x := v.(type) {
@@ -109,18 +101,6 @@ func parseConfig(data []byte) (pluginConfig, error) {
 	return cfg, nil
 }
 
-// windowKey maps a display value (or a legacy API key) to the usage API window key.
-func windowKey(v string) string {
-	switch strings.TrimSpace(v) {
-	case windowOpus, "seven_day_opus":
-		return "seven_day_opus"
-	case windowSonnet, "seven_day_sonnet":
-		return "seven_day_sonnet"
-	default:
-		return "seven_day"
-	}
-}
-
 func (c pluginConfig) interval() time.Duration {
 	m := c.RefreshIntervalMinutes
 	if m <= 0 {
@@ -130,10 +110,6 @@ func (c pluginConfig) interval() time.Duration {
 		m = minInterval
 	}
 	return time.Duration(m) * time.Minute
-}
-
-func (c pluginConfig) window() string {
-	return windowKey(c.WeeklyWindow)
 }
 
 func (c pluginConfig) deprioritizeExhausted() bool {
@@ -171,7 +147,7 @@ func configure(raw []byte) error {
 	if previous.HistoryDir != cfg.HistoryDir || !history.loaded() {
 		history.load(cfg.historyPath())
 	}
-	if previous.window() != cfg.window() || previous.interval() != cfg.interval() {
+	if previous.interval() != cfg.interval() {
 		requestRefresh(true)
 	}
 	return nil
@@ -222,13 +198,6 @@ func registration() map[string]any {
 					Type:        pluginapi.ConfigFieldTypeInteger,
 					Default:     defaultInterval,
 					Description: "How often the plugin checks account usage with Anthropic. Minimum 5, default 30. Requests never trigger a check.",
-				},
-				{
-					Name:        keyWindow,
-					Type:        pluginapi.ConfigFieldTypeEnum,
-					Default:     windowAll,
-					EnumValues:  []string{windowAll, windowOpus, windowSonnet},
-					Description: "Accounts are ordered by when this limit resets. Keep All models unless your plan has separate Opus or Sonnet weekly limits. Accounts without the chosen limit are ordered by the all-models limit.",
 				},
 				{
 					Name:        keyDeprioritize,
@@ -342,11 +311,11 @@ func rankCandidates(cands []pluginapi.SchedulerAuthCandidate, accounts map[strin
 	for _, c := range cands {
 		rc := rankedCandidate{id: c.ID, priority: c.Priority}
 		if acc, ok := accounts[c.ID]; ok && acc.Error == "" {
-			if w, ok := acc.Windows[acc.weeklyWindow(cfg.window(), now)]; ok && w.ResetsAt.After(now) {
+			if w, ok := acc.Windows[allModelsWindow]; ok && w.ResetsAt.After(now) {
 				rc.hasReset = true
 				rc.resetsAt = w.ResetsAt
 			}
-			if cfg.deprioritizeExhausted() && acc.exhausted(cfg.window(), now) {
+			if cfg.deprioritizeExhausted() && acc.exhausted(now) {
 				rc.exhausted = true
 			}
 		}

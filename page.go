@@ -346,18 +346,13 @@ func renderPage(notice string, now time.Time) []byte {
 		}
 	}
 	ranked := rankCandidates(cands, accounts, cfg, now)
-	window := cfg.window()
+	window := allModelsWindow
 	paces := map[string]pace{}
 	cyclePoints := map[string][]point{}
-	fallbacks := 0 // accounts ordered by the all-models limit because the configured one is missing
 	for _, rc := range ranked {
 		acc := accounts[rc.id]
-		key := acc.weeklyWindow(window, now)
-		if key != window {
-			fallbacks++
-		}
-		if w, ok := acc.Windows[key]; ok && w.ResetsAt.After(now) {
-			pts := history.cycle(historyKey(acc), key, w.ResetsAt)
+		if w, ok := acc.Windows[window]; ok && w.ResetsAt.After(now) {
+			pts := history.cycle(historyKey(acc), window, w.ResetsAt)
 			cyclePoints[rc.id] = pts
 			paces[rc.id] = paceFor(pts, w, now)
 		}
@@ -407,9 +402,6 @@ func renderPage(notice string, now time.Time) []byte {
 				html.EscapeString(firstNonEmpty(acc.Label, acc.FileName, acc.ID)))
 		}
 	}
-	if fallbacks > 0 {
-		fmt.Fprintf(&b, `<p class="notice">%s</p>`, html.EscapeString(fallbackNotice(window, fallbacks, len(ranked))))
-	}
 	if cfg.Shadow {
 		b.WriteString(`<p class="notice shadow"><b>Watch only.</b> Requests use the normal routing. The page shows which account this plugin would pick, so you can compare before turning it on.</p>`)
 	}
@@ -419,7 +411,7 @@ func renderPage(notice string, now time.Time) []byte {
 	if len(ranked) > 0 && ranked[0].hasReset {
 		top := ranked[0]
 		acc := accounts[top.id]
-		weekly := acc.Windows[acc.weeklyWindow(window, now)]
+		weekly := acc.Windows[window]
 		b.WriteString(bubbleHTML(weekly.Utilization, 120))
 		eyebrow := "In use"
 		if cfg.Shadow {
@@ -448,7 +440,7 @@ func renderPage(notice string, now time.Time) []byte {
 
 	// Order table.
 	b.WriteString(`<div class="table-wrap" tabindex="0" role="region" aria-labelledby="order-caption"><table>`)
-	fmt.Fprintf(&b, `<caption id="order-caption">Pick order · soonest %s weekly reset first</caption>`, html.EscapeString(windowLabel(window)))
+	b.WriteString(`<caption id="order-caption">Pick order · soonest weekly reset first</caption>`)
 	picksHead := "Picks"
 	if cfg.Shadow {
 		picksHead = "Would pick"
@@ -468,7 +460,7 @@ func renderPage(notice string, now time.Time) []byte {
 		fmt.Fprintf(&b, `<th scope="row"><span class="acct"><span class="rank"><span class="sr-only">Rank </span>%d</span><span><span class="name">%s</span><span class="meta">priority %d</span></span></span></th>`,
 			i+1, breakableLabel(label), acc.Priority)
 
-		weekly, hasWeekly := acc.Windows[acc.weeklyWindow(window, now)]
+		weekly, hasWeekly := acc.Windows[window]
 		if hasWeekly && !weekly.ResetsAt.IsZero() {
 			fmt.Fprintf(&b, `<td data-label="Weekly reset"><span><span class="pct">%s</span><span class="meta">%s</span></span></td>`,
 				timeTag(weekly.ResetsAt, "data-in", "in "+humanDuration(weekly.ResetsAt.Sub(now))),
@@ -537,7 +529,7 @@ func renderPage(notice string, now time.Time) []byte {
 	var charts strings.Builder
 	for _, rc := range ranked {
 		acc := accounts[rc.id]
-		w, ok := acc.Windows[acc.weeklyWindow(window, now)]
+		w, ok := acc.Windows[window]
 		if !ok || !w.ResetsAt.After(now) || acc.Error != "" {
 			continue
 		}
@@ -570,28 +562,6 @@ func renderPage(notice string, now time.Time) []byte {
 	b.WriteString(`</div>`)
 	b.WriteString(`<script>` + chartJS + pageJS + `</script></body></html>`)
 	return b.Bytes()
-}
-
-// fallbackNotice explains that some accounts report no separate limit for the configured window
-// and are ordered by the all-models weekly limit instead.
-func fallbackNotice(window string, n, total int) string {
-	label := windowLabel(window)
-	if n == total {
-		return fmt.Sprintf("None of your accounts report a separate %s weekly limit, so they are ordered by the all-models weekly limit. Set Weekly limit to order by to All models to hide this note.", label)
-	}
-	return fmt.Sprintf("%d of %d accounts report no separate %s weekly limit. Those are ordered by the all-models weekly limit.", n, total, label)
-}
-
-// windowLabel is the display name of a weekly usage window.
-func windowLabel(key string) string {
-	switch key {
-	case "seven_day_opus":
-		return windowOpus
-	case "seven_day_sonnet":
-		return windowSonnet
-	default:
-		return "all-models"
-	}
 }
 
 func humanDuration(d time.Duration) string {

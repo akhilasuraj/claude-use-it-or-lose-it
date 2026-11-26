@@ -54,7 +54,7 @@ You need CLIProxyAPI v8.0.29 or newer, with at least one Claude account logged i
 
 2. In the management panel, open the plugin store, find **Use It or Lose It** (marked third-party) and click **Install**.
 
-The store downloads the build for your system and checks it against the release's `checksums.txt`. When a new version is released, the store shows an **Update** button. Updates aren't installed automatically. Each version is saved under its own file name, such as `claude-use-it-or-lose-it-v1.0.2.dll`, so CLIProxyAPI switches to the new version without a restart.
+The store downloads the build for your system and checks it against the release's `checksums.txt`. When a new version is released, the store shows an **Update** button. Updates aren't installed automatically. Each version is saved under its own file name, such as `claude-use-it-or-lose-it-v1.1.0.dll`, so CLIProxyAPI switches to the new version without a restart.
 
 If you installed the plugin by hand before, delete that copy from your plugins folder, so only one copy is left.
 
@@ -76,7 +76,6 @@ plugins:
     claude-use-it-or-lose-it:
       enabled: true
       "Check usage every (minutes)": 30
-      "Weekly limit to order by": "All models"
       "Move full accounts to the bottom": true
       "Watch only, do not change routing": false
       "Folder for usage history": ""
@@ -89,14 +88,13 @@ Every setting is optional. You can also change them on the Plugins page of the m
 | Setting | Values | Default | What it does |
 |---|---|---|---|
 | `Check usage every (minutes)` | integer, at least 5 | `30` | How often usage is checked with Anthropic. Lower values aren't needed in normal use, because live updates fill the gaps. |
-| `Weekly limit to order by` | `All models`, `Opus`, `Sonnet` | `All models` | Which weekly limit's reset time decides the order. See the note below. |
 | `Move full accounts to the bottom` | `true`, `false` | `true` | Accounts at 100% of their 5-hour or weekly limit are tried last. |
 | `Watch only, do not change routing` | `true`, `false` | `false` | The plugin works out its pick and shows it on the status page, but requests keep using the normal routing. |
 | `Folder for usage history` | path | empty | Where `history.json` is kept. If empty, a `claude-use-it-or-lose-it` folder in your user config folder is used (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux). In Docker, point it at a mounted volume. |
 
-**About `Opus` and `Sonnet`:** keep `All models` unless your plan has a separate Opus or Sonnet weekly limit. Accounts that report no such limit are ordered by their all-models weekly limit instead, and the status page says so. An account counts as full when any of its limits is at 100%: the chosen one, the all-models weekly limit or the 5-hour limit. Response headers only carry the all-models and 5-hour limits, so a separate Opus or Sonnet reading only changes at each timed check.
+The weekly limit used is the one that applies across all models. Claude plans no longer have separate Opus or Sonnet weekly limits. The Fable limit on Max and Ultra plans is a share of the all-models weekly limit, not extra quota, and the plugin doesn't track it separately. Versions before 1.1.0 had a `Weekly limit to order by` setting. If your `config.yaml` still has it, it's ignored.
 
-Older snake_case keys (`refresh_interval_minutes`, `weekly_window`, `deprioritize_exhausted`) are still accepted.
+Older snake_case keys (`refresh_interval_minutes`, `deprioritize_exhausted`) are still accepted.
 
 ## Status page
 

@@ -130,18 +130,18 @@ func TestParseConfigLabelledAndLegacyKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.interval() != 45*time.Minute || cfg.window() != "seven_day_opus" || cfg.deprioritizeExhausted() {
+	if cfg.interval() != 45*time.Minute || cfg.deprioritizeExhausted() {
 		t.Fatalf("labelled keys parsed as %+v", cfg)
 	}
 	legacy, err := parseConfig([]byte("refresh_interval_minutes: 10\nweekly_window: seven_day_sonnet\ndeprioritize_exhausted: false\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if legacy.interval() != 10*time.Minute || legacy.window() != "seven_day_sonnet" || legacy.deprioritizeExhausted() {
+	if legacy.interval() != 10*time.Minute || legacy.deprioritizeExhausted() {
 		t.Fatalf("legacy keys parsed as %+v", legacy)
 	}
 	empty, _ := parseConfig([]byte("enabled: true\n"))
-	if empty.interval() != defaultInterval*time.Minute || empty.window() != "seven_day" || !empty.deprioritizeExhausted() {
+	if empty.interval() != defaultInterval*time.Minute || !empty.deprioritizeExhausted() {
 		t.Fatalf("defaults parsed as %+v", empty)
 	}
 }
