@@ -63,8 +63,23 @@ type accountState struct {
 	Windows       map[string]usageWindow
 }
 
+// allModelsWindow is the weekly limit every Claude plan has. Response headers update it live.
+const allModelsWindow = "seven_day"
+
+// weeklyWindow is the window this account is ordered by: the configured one when the account
+// has a current reading for it, otherwise the all-models limit. Plans without a separate Opus
+// or Sonnet limit report none, and ordering by a missing limit would leave nothing to route by.
+func (a accountState) weeklyWindow(preferred string, now time.Time) string {
+	if w, ok := a.Windows[preferred]; ok && w.ResetsAt.After(now) {
+		return preferred
+	}
+	return allModelsWindow
+}
+
+// exhausted reports whether any limit that applies to the account is used up: the configured
+// weekly limit, the all-models weekly limit or the 5-hour limit.
 func (a accountState) exhausted(weekly string, now time.Time) bool {
-	for _, key := range []string{weekly, "five_hour"} {
+	for _, key := range []string{weekly, allModelsWindow, "five_hour"} {
 		if w, ok := a.Windows[key]; ok && w.Utilization >= 100 && w.ResetsAt.After(now) {
 			return true
 		}
@@ -305,18 +320,16 @@ func (r *refresher) clearStaleCooldown(acc accountState, weekly string, now time
 	hostLog("info", pluginName+": cleared cooldown, the account has room again", map[string]any{"account": acc.Label})
 }
 
-// hasRoom reports whether the readings show the account below both its limits.
+// hasRoom reports whether the readings show the account below all its limits. The 5-hour and
+// all-models weekly readings must be present; a separate Opus or Sonnet limit only counts when
+// the account reports one.
 func hasRoom(acc accountState, weekly string, now time.Time) bool {
-	for _, key := range []string{weekly, "five_hour"} {
-		w, ok := acc.Windows[key]
-		if !ok {
-			return false
-		}
-		if w.Utilization >= 100 && w.ResetsAt.After(now) {
+	for _, key := range []string{allModelsWindow, "five_hour"} {
+		if _, ok := acc.Windows[key]; !ok {
 			return false
 		}
 	}
-	return true
+	return !acc.exhausted(weekly, now)
 }
 
 // isLoginExpired recognises a credential that needs a new login, as opposed to a passing error.

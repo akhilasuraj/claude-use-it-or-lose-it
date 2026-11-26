@@ -4,8 +4,10 @@
 
 How it works:
 
-- Accounts are ordered by weekly reset time, soonest first.
+- Accounts are ordered by weekly reset time, soonest first, across all CLIProxyAPI priority levels. Priority only breaks ties, so an account that has just reset moves to the back by itself.
 - Accounts at 100% of their 5-hour or weekly limit move to the bottom.
+- The weekly limit to order by can be All models (default), Opus or Sonnet. Accounts without the chosen limit are ordered by the all-models limit.
+- Requests that could also go to a non-Claude provider are left to CLIProxyAPI's normal routing.
 - Usage is checked with Anthropic every 30 minutes (never per request) and updated live from Anthropic's rate-limit response headers.
 - When an account has room again after an early reset, the proxy's cooldown for it is cleared.
 - With no usage data, CLIProxyAPI's normal routing is used.

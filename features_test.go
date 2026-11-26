@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,5 +244,54 @@ func TestLoginExpiredAndRoom(t *testing.T) {
 	reset := accountState{Windows: map[string]usageWindow{"seven_day": {Utilization: 3, ResetsAt: now.Add(7 * 24 * time.Hour)}, "five_hour": {}}}
 	if !hasRoom(reset, "seven_day", now) {
 		t.Fatal("a freshly reset account has room")
+	}
+}
+
+func TestOpusWindowFallsBackToAllModels(t *testing.T) {
+	now := time.Now()
+	w := func(u float64, d time.Duration) usageWindow {
+		return usageWindow{Utilization: u, ResetsAt: now.Add(d), At: now}
+	}
+	cands := []pluginapi.SchedulerAuthCandidate{
+		{ID: "later", Provider: "claude"},
+		{ID: "sooner", Provider: "claude"},
+	}
+	accounts := map[string]accountState{
+		"later":  {ID: "later", Windows: map[string]usageWindow{"seven_day": w(10, 96*time.Hour), "five_hour": w(0, time.Hour)}},
+		"sooner": {ID: "sooner", Windows: map[string]usageWindow{"seven_day": w(50, 24*time.Hour), "five_hour": w(0, time.Hour)}},
+	}
+	opus := pluginConfig{WeeklyWindow: "seven_day_opus"}
+	if id, _ := choose(cands, accounts, opus, now); id != "sooner" {
+		t.Fatalf("with no Opus limit the all-models reset must decide, got %q", id)
+	}
+
+	// An account that does report an Opus limit is ordered by it.
+	later := accounts["later"]
+	later.Windows = mergeWindows(later.Windows, map[string]usageWindow{"seven_day_opus": w(5, 2*time.Hour)})
+	accounts["later"] = later
+	if id, _ := choose(cands, accounts, opus, now); id != "later" {
+		t.Fatalf("the Opus reset must decide when it is reported, got %q", id)
+	}
+
+	// A full all-models limit makes the account full even when ordering by Opus.
+	later.Windows = mergeWindows(later.Windows, map[string]usageWindow{"seven_day": w(100, 96*time.Hour)})
+	accounts["later"] = later
+	if id, _ := choose(cands, accounts, opus, now); id != "sooner" {
+		t.Fatalf("an account with a full all-models limit goes last, got %q", id)
+	}
+	if hasRoom(accounts["later"], "seven_day_opus", now) {
+		t.Fatal("a full all-models limit leaves no room")
+	}
+	if !hasRoom(accounts["sooner"], "seven_day_opus", now) {
+		t.Fatal("a missing Opus limit must not block clearing a cooldown")
+	}
+}
+
+func TestFallbackNotice(t *testing.T) {
+	if got := fallbackNotice("seven_day_opus", 2, 2); !strings.Contains(got, "None of your accounts report a separate Opus weekly limit") {
+		t.Fatalf("unexpected notice: %q", got)
+	}
+	if got := fallbackNotice("seven_day_sonnet", 1, 3); got != "1 of 3 accounts report no separate Sonnet weekly limit. Those are ordered by the all-models weekly limit." {
+		t.Fatalf("unexpected notice: %q", got)
 	}
 }

@@ -19,7 +19,7 @@ import (
 const (
 	pluginName      = "claude-use-it-or-lose-it"
 	pluginTitle     = "Use It or Lose It"
-	pluginVersion   = "1.0.1"
+	pluginVersion   = "1.0.2"
 	resourcePath    = "/status"
 	claudeProvider  = "claude"
 	defaultInterval = 30
@@ -228,7 +228,7 @@ func registration() map[string]any {
 					Type:        pluginapi.ConfigFieldTypeEnum,
 					Default:     windowAll,
 					EnumValues:  []string{windowAll, windowOpus, windowSonnet},
-					Description: "Accounts are ordered by when this limit resets. Keep All models unless your plan has separate Opus or Sonnet weekly limits.",
+					Description: "Accounts are ordered by when this limit resets. Keep All models unless your plan has separate Opus or Sonnet weekly limits. Accounts without the chosen limit are ordered by the all-models limit.",
 				},
 				{
 					Name:        keyDeprioritize,
@@ -342,7 +342,7 @@ func rankCandidates(cands []pluginapi.SchedulerAuthCandidate, accounts map[strin
 	for _, c := range cands {
 		rc := rankedCandidate{id: c.ID, priority: c.Priority}
 		if acc, ok := accounts[c.ID]; ok && acc.Error == "" {
-			if w, ok := acc.Windows[cfg.window()]; ok && !w.ResetsAt.IsZero() && w.ResetsAt.After(now) {
+			if w, ok := acc.Windows[acc.weeklyWindow(cfg.window(), now)]; ok && w.ResetsAt.After(now) {
 				rc.hasReset = true
 				rc.resetsAt = w.ResetsAt
 			}

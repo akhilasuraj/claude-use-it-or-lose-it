@@ -1,43 +1,47 @@
 # Use It or Lose It
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that sends each request to the Claude account whose weekly limit resets soonest.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin for Claude accounts. It sends each request to the account whose weekly limit resets soonest, so quota that is about to expire is used before it's gone.
 
-## What it does
+## Why
 
-If you run several Claude OAuth accounts through CLIProxyAPI, each one has a weekly limit that resets at its own time. Whatever an account has not used by its reset is gone. This plugin routes requests to the account that resets next, so the quota that is about to expire gets used first. Accounts that reset later keep their quota for later. Use it or lose it.
+Every Claude Pro or Max account has a weekly limit that resets at its own time. Whatever an account hasn't used by then is lost. CLIProxyAPI's built-in routing (round-robin, fill-first or priorities) doesn't know about reset times. It can keep sending requests to an account with days left while another one is about to reset with quota unused.
+
+A fixed priority doesn't solve this, because the right order changes every time an account resets. Say account B resets first, so you give it the top priority. B runs out and requests move to A, which is correct. Then B resets. It now has a full week ahead and should be used last. But it still has the top priority, so requests go straight back to it, and A's remaining quota expires.
+
+This plugin works out the order again for every request, from each account's real reset time and usage.
 
 ## How it picks
 
-For every request, the plugin orders the candidate accounts by these rules, in this order:
+CLIProxyAPI gives the plugin the accounts it considers usable for the request: enabled, supporting the model, and not cooling down after a rate limit. Accounts from every priority level are included. The plugin sorts them by these rules, in this order:
 
-1. Full accounts go last. An account is full when its 5-hour or weekly limit is at 100% and has not reset yet.
-2. Accounts with a known weekly reset time come before accounts without one.
-3. Sooner weekly reset comes first.
-4. Higher CLIProxyAPI priority comes first.
-5. Account ID, as a tie-breaker.
+1. **Full accounts last.** An account is full when its 5-hour or weekly limit is at 100% and hasn't reset yet. You can turn this rule off.
+2. **Accounts with usage data before accounts without.**
+3. **Soonest weekly reset first.**
+4. **Higher CLIProxyAPI priority first.** Priority only breaks ties.
+5. **Account ID**, as the last tie-breaker.
 
-The plugin steps aside and lets CLIProxyAPI's built-in routing decide when:
+It then sends the request to the first account. When an account resets, its next reset is a week away, so it moves to the back by itself.
 
-- any candidate is not a Claude account, or
-- it has no usage data yet for the top account.
+The plugin leaves the choice to CLIProxyAPI's normal routing when:
 
-## Features
+- any account offered for the request isn't a Claude account (for example, a request that could also go to another provider), or
+- the first account after sorting has no usage data. This happens right after startup, and when every account with data is full while some account without data is still offered.
 
-- Picks the account whose weekly limit resets soonest.
-- Moves full accounts to the bottom (can be turned off).
-- Checks usage with Anthropic every 30 minutes by default. Requests never trigger a check.
-- Also checks shortly after a known reset passes, since the order changes then.
-- Updates live between checks from the `anthropic-ratelimit-unified-*` headers on every Claude response.
-- Clears CLIProxyAPI's cooldown on an account when a check shows it has room again, for example after an early reset.
-- Keeps 15 days of usage history in a small JSON file.
-- Status page in the management panel: pick order, pace ("X% would go unused at reset"), weekly charts, and a card for accounts whose login expired.
-- Watch-only mode: see what the plugin would pick without changing routing.
+While the plugin makes the choice, your `routing.strategy` setting and account priorities don't decide the order. If every account is full, the plugin still picks one: the full account whose weekly limit resets soonest.
+
+## Where the usage data comes from
+
+- **Timed checks.** Every 30 minutes by default, the plugin asks Anthropic's usage endpoint for each Claude account's 5-hour and weekly usage. It uses the login CLIProxyAPI already holds for that account. It also checks about 2 minutes after a known reset time passes, because the order changes then.
+- **Live updates.** Every Claude response carries `anthropic-ratelimit-unified-*` headers with the 5-hour and weekly usage. The plugin reads them from each finished request, so the numbers stay current between checks without extra calls.
+- **Never per request.** Picking an account only reads cached data. It never waits on the network.
+
+If a check shows that an account CLIProxyAPI is still holding in cooldown has room again, for example after an early reset, the plugin clears that cooldown so the account can be used right away. It does this at most once every 30 minutes per account.
 
 ## Install
 
-### From the plugin store (recommended)
+You need CLIProxyAPI v8.0.29 or newer, with at least one Claude account logged in.
 
-The plugin store in the management panel installs the right build for your system, checks it against `checksums.txt`, and shows **Update available** when a new release is out.
+### From the plugin store (recommended)
 
 1. Add this plugin's registry to `config.yaml`. The official registry stays included.
 
@@ -48,30 +52,26 @@ The plugin store in the management panel installs the right build for your syste
        - "https://akhilasuraj.github.io/claude-use-it-or-lose-it/registry.json"
    ```
 
-2. Open the plugin store in the management panel, find **Use It or Lose It** and click **Install**.
+2. In the management panel, open the plugin store, find **Use It or Lose It** (marked third-party) and click **Install**.
 
-To update later, click **Update** in the store. No restart is needed: each version is saved under its own file name, `claude-use-it-or-lose-it-v<version>.dll` (or `.so`, `.dylib`), and the proxy switches to it while running.
+The store downloads the build for your system and checks it against the release's `checksums.txt`. When a new version is released, the store shows an **Update** button. Updates aren't installed automatically. Each version is saved under its own file name, such as `claude-use-it-or-lose-it-v1.0.2.dll`, so CLIProxyAPI switches to the new version without a restart.
 
-If you installed by hand before, delete the old `claude-use-it-or-lose-it` library from your plugins folder first, so only the store copy is left.
+If you installed the plugin by hand before, delete that copy from your plugins folder, so only one copy is left.
 
 ### By hand
 
-1. Download the zip for your platform from [Releases](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases):
-   `claude-use-it-or-lose-it_<version>_<os>_<arch>.zip`. Check it against `checksums.txt` if you like.
+1. Download `claude-use-it-or-lose-it_<version>_<os>_<arch>.zip` for your platform from [Releases](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases). You can check it against `checksums.txt`.
 2. Unzip it. It contains one file: `claude-use-it-or-lose-it.dll`, `.so` or `.dylib`.
-3. Put that file in your plugins folder (the folder set by `plugins.dir`, `plugins` by default).
-4. Enable plugins and this plugin in `config.yaml` (see below).
+3. Put that file in your plugins folder (`plugins.dir`, `plugins` by default).
+4. Turn on plugins and this plugin in `config.yaml`, as shown below.
 
-To update by hand, replace the file and restart CLIProxyAPI. The proxy keeps running the copy it loaded until it restarts.
+To update a manual install, replace the file and restart CLIProxyAPI. Until the restart, it keeps running the copy it already loaded.
 
 ### Settings in config.yaml
-
-Either way, the plugin's settings live in `config.yaml`:
 
 ```yaml
 plugins:
   enabled: true
-  dir: "plugins"
   configs:
     claude-use-it-or-lose-it:
       enabled: true
@@ -82,32 +82,54 @@ plugins:
       "Folder for usage history": ""
 ```
 
-All settings are optional. You can also change them on the Plugins page of the management panel.
+Every setting is optional. You can also change them on the Plugins page of the management panel. The setting names are long because the panel shows them as labels.
 
 ## Settings
 
-| Setting | Type | Default | What it does |
+| Setting | Values | Default | What it does |
 |---|---|---|---|
-| `Check usage every (minutes)` | integer | `30` | How often usage is checked with Anthropic. Minimum 5. |
-| `Weekly limit to order by` | `All models`, `Opus`, `Sonnet` | `All models` | Which weekly limit's reset time decides the order. Keep `All models` unless your plan has separate Opus or Sonnet weekly limits. |
-| `Move full accounts to the bottom` | boolean | `true` | Accounts at 100% of their weekly or 5-hour limit are tried last. |
-| `Watch only, do not change routing` | boolean | `false` | Requests keep using the normal routing. The status page shows what the plugin would have picked. |
-| `Folder for usage history` | string | empty | Where `history.json` is kept. Empty means your user config folder, in a `claude-use-it-or-lose-it` subfolder. In Docker, point it at a mounted volume. |
+| `Check usage every (minutes)` | integer, at least 5 | `30` | How often usage is checked with Anthropic. Lower values aren't needed in normal use, because live updates fill the gaps. |
+| `Weekly limit to order by` | `All models`, `Opus`, `Sonnet` | `All models` | Which weekly limit's reset time decides the order. See the note below. |
+| `Move full accounts to the bottom` | `true`, `false` | `true` | Accounts at 100% of their 5-hour or weekly limit are tried last. |
+| `Watch only, do not change routing` | `true`, `false` | `false` | The plugin works out its pick and shows it on the status page, but requests keep using the normal routing. |
+| `Folder for usage history` | path | empty | Where `history.json` is kept. If empty, a `claude-use-it-or-lose-it` folder in your user config folder is used (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux). In Docker, point it at a mounted volume. |
 
-Older snake_case keys (`refresh_interval_minutes`, `weekly_window`, `deprioritize_exhausted`) still work.
+**About `Opus` and `Sonnet`:** keep `All models` unless your plan has a separate Opus or Sonnet weekly limit. Accounts that report no such limit are ordered by their all-models weekly limit instead, and the status page says so. An account counts as full when any of its limits is at 100%: the chosen one, the all-models weekly limit or the 5-hour limit. Response headers only carry the all-models and 5-hour limits, so a separate Opus or Sonnet reading only changes at each timed check.
+
+Older snake_case keys (`refresh_interval_minutes`, `weekly_window`, `deprioritize_exhausted`) are still accepted.
 
 ## Status page
 
-Open the management panel and choose **Use It or Lose It** in the plugin menu. The page shows:
+In the management panel, choose **Use It or Lose It** from the plugin menu. The page follows the panel's light and dark themes, works at phone width, and updates in place every minute. It shows:
 
-- the pick order, with each account's weekly reset, weekly and 5-hour usage, and pick counts,
-- the pace for each account: when it runs out, or how much would go unused at reset,
-- a chart of this week's usage per account, with the current pace drawn to the reset,
-- a card for any account whose login expired,
-- a **Refresh now** button.
+- the account in use now, or the account it would pick in watch-only mode;
+- the pick order, with each account's weekly reset, weekly and 5-hour usage, and its state: *In use*, *Next*, *Standby*, *Limit reached*, *No reset data*, *Renewing login*, *Check failed* or *Login expired*;
+- for each account, how many requests the plugin picked it for and how many were actually sent with it (both counts start at zero when CLIProxyAPI starts);
+- a chart of this week's usage for each account, with the current pace drawn on to the reset. It shows when the account would run out at that pace, or how much of its weekly limit would go unused. The pace needs at least 2 hours of readings in the current week;
+- a **Refresh now** button, which checks usage at most once a minute.
 
 ![Status page, light theme](docs/assets/screenshot-light.png)
 ![Status page, dark theme](docs/assets/screenshot-dark.png)
+
+## Expired logins
+
+If an account's usage can't be read, the plugin keeps that account's last readings, so one failed check doesn't reorder anything, and tries again after 2 minutes. An account is shown as **Login expired** only when:
+
+- its credential has no access token,
+- Anthropic rejects the token (HTTP 401) on two checks in a row,
+- the token stays expired through 8 checks in a row (about 15 minutes), or
+- CLIProxyAPI itself marks the credential as failing with a login or refresh error.
+
+Right after the computer wakes from sleep, an account can show **Renewing login** for a short while. CLIProxyAPI renews tokens on its own schedule, and the plugin waits for that instead of using an expired token. As soon as a request is served with the account, any warning is cleared.
+
+To fix a real expired login, log in to the account again on the Auth Files page.
+
+## Good to know
+
+- **Don't run it alongside another scheduler plugin.** CLIProxyAPI asks scheduler plugins in turn, highest `priority` in `plugins.configs` first, and the first one that makes a choice wins. Pick one.
+- **Claude API keys.** If you also have Claude API-key entries, the plugin has no usage data for them. It ranks them after the logged-in accounts, so they're only used through the normal routing, when no logged-in account with data is available.
+- **The usage endpoint isn't a public API.** Anthropic doesn't document it, and if Anthropic changes it, the timed checks fail. Live updates from response headers keep working, and when there's no data, routing falls back to normal.
+- **Counts are in memory.** Pick and sent counts reset when CLIProxyAPI restarts. The usage history in `history.json` is kept.
 
 ## Permissions and privacy
 
@@ -115,20 +137,20 @@ The plugin uses these CLIProxyAPI host calls:
 
 | Call | Why |
 |---|---|
-| `host.auth.list` | Lists your credentials to find the Claude accounts. |
-| `host.auth.get` | Reads a Claude credential. Only the OAuth access token is used, and only to call Anthropic's usage endpoint. |
+| `host.auth.list` | Finds the Claude accounts and reads their priority, status and e-mail address. |
+| `host.auth.get` | Reads a Claude credential. Only the access token and its expiry time are used, and only to call Anthropic's usage endpoint. |
 | Usage records | Reads the provider, account and response headers of each finished request, to pick up the rate-limit headers. |
 | `host.routing.reset_cooldown` | Clears the cooldown on an account that has room again. |
-| `host.log` | Writes its own log lines to the CLIProxyAPI log. |
+| `host.log` | Writes its own lines to the CLIProxyAPI log. |
 
-Network: the only outside request it makes is `GET https://api.anthropic.com/api/oauth/usage`, with that account's own token. It sends nothing anywhere else.
+**Network:** the only outside request is `GET https://api.anthropic.com/api/oauth/usage`, sent with each account's own token. There's no telemetry, and nothing is sent anywhere else.
 
-Disk: it writes one file, `history.json`. It holds each account's e-mail address, usage percentages, reset times and timestamps. Readings older than 15 days are removed.
+**Disk:** it writes one file, `history.json`. For each account it stores the e-mail address, usage percentages, reset times and timestamps, with at most one reading per account every 10 minutes. Readings older than 15 days are removed.
 
 ## Compatibility
 
-- CLIProxyAPI **v8.0.29 or newer**. The plugin is built against the v8.0.29 SDK (plugin schema version 6). Older hosts lack features it uses.
-- Claude OAuth accounts. API-key accounts have no weekly limit and are not managed.
+- CLIProxyAPI v8.0.29 or newer. The plugin is built against the v8.0.29 SDK.
+- Claude Pro and Max accounts logged in through OAuth.
 - Windows, Linux and macOS, on amd64 and arm64.
 
 ## Build from source
@@ -140,30 +162,28 @@ go test ./...
 CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags "-s -w" -o build/claude-use-it-or-lose-it.so .
 ```
 
-Use `.dll` on Windows and `.dylib` on macOS. Copy only the library into your plugins folder; the generated `.h` file is not needed.
+Use `.dll` on Windows and `.dylib` on macOS. Copy only the library into your plugins folder. You don't need the generated `.h` file.
 
 ## Uninstall
 
-1. Remove the `claude-use-it-or-lose-it` block from `plugins.configs` (or set `enabled: false`).
-2. Delete the library from your plugins folder, or use **Delete** on the Plugins page if you installed it from the store.
-3. Optional: delete the history folder, `claude-use-it-or-lose-it` in your user config folder (or the folder you set).
+1. If you installed from the store, click **Delete** on the Plugins page. Otherwise, delete the library from your plugins folder and remove the `claude-use-it-or-lose-it` block from `plugins.configs` (or set `enabled: false`).
+2. Optional: delete the history folder.
 
-CLIProxyAPI goes back to its built-in routing.
+CLIProxyAPI goes back to its normal routing.
 
 ## FAQ
 
 **Does it slow down requests?**
-No. Picking only reads cached data. Usage checks run in the background on a timer.
+No. Picking only reads cached data. Usage checks run in the background.
 
-**I mix Claude with other providers. What happens?**
-When a request's candidates include a non-Claude account, the plugin leaves the choice to the built-in routing.
+**Can I try it without changing my routing?**
+Yes. Turn on `Watch only, do not change routing` and compare its picks on the status page with what was actually sent.
 
-**Can I try it without changing anything?**
-Yes. Turn on `Watch only, do not change routing`. The status page shows what it would pick.
+**I use Claude together with other providers. What happens?**
+Requests that can only go to Claude accounts are routed by the plugin. A request whose accounts include another provider is left to the normal routing.
 
-**An account shows "Login expired". What do I do?**
-Log in to that account again on the Auth Files page. Until then the plugin cannot read its usage.
-Right after the computer wakes from sleep, an account can briefly show "Renewing login" while the proxy renews its token. That clears by itself; it is not an expired login.
+**Why does the same account get every request?**
+Because it resets soonest. The plugin keeps using it until it's full or resets, then moves on. Staying on one account also keeps Claude's prompt cache useful within a conversation.
 
 ## License
 
