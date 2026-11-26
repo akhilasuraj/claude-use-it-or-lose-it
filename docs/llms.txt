@@ -21,7 +21,8 @@ How it works:
 
 ## Download
 
-- [Latest release](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest): zip files per platform; put the library in the CLIProxyAPI plugins folder and enable it under `plugins.configs.claude-use-it-or-lose-it` in config.yaml
+- [Plugin store registry](https://akhilasuraj.github.io/claude-use-it-or-lose-it/registry.json): add this URL under `plugins.store-sources` in config.yaml, then install and update from the plugin store in the CLIProxyAPI management panel
+- [Latest release](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest): zip files per platform for a manual install; put the library in the CLIProxyAPI plugins folder and enable it under `plugins.configs.claude-use-it-or-lose-it` in config.yaml
 
 ## Source
 

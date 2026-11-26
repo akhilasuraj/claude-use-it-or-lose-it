@@ -35,11 +35,38 @@ The plugin steps aside and lets CLIProxyAPI's built-in routing decide when:
 
 ## Install
 
+### From the plugin store (recommended)
+
+The plugin store in the management panel installs the right build for your system, checks it against `checksums.txt`, and shows **Update available** when a new release is out.
+
+1. Add this plugin's registry to `config.yaml`. The official registry stays included.
+
+   ```yaml
+   plugins:
+     enabled: true
+     store-sources:
+       - "https://akhilasuraj.github.io/claude-use-it-or-lose-it/registry.json"
+   ```
+
+2. Open the plugin store in the management panel, find **Use It or Lose It** and click **Install**.
+
+To update later, click **Update** in the store. No restart is needed: each version is saved under its own file name, `claude-use-it-or-lose-it-v<version>.dll` (or `.so`, `.dylib`), and the proxy switches to it while running.
+
+If you installed by hand before, delete the old `claude-use-it-or-lose-it` library from your plugins folder first, so only the store copy is left.
+
+### By hand
+
 1. Download the zip for your platform from [Releases](https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases):
    `claude-use-it-or-lose-it_<version>_<os>_<arch>.zip`. Check it against `checksums.txt` if you like.
 2. Unzip it. It contains one file: `claude-use-it-or-lose-it.dll`, `.so` or `.dylib`.
 3. Put that file in your plugins folder (the folder set by `plugins.dir`, `plugins` by default).
-4. Enable plugins and this plugin in `config.yaml`:
+4. Enable plugins and this plugin in `config.yaml` (see below).
+
+To update by hand, replace the file and restart CLIProxyAPI. The proxy keeps running the copy it loaded until it restarts.
+
+### Settings in config.yaml
+
+Either way, the plugin's settings live in `config.yaml`:
 
 ```yaml
 plugins:
@@ -118,7 +145,7 @@ Use `.dll` on Windows and `.dylib` on macOS. Copy only the library into your plu
 ## Uninstall
 
 1. Remove the `claude-use-it-or-lose-it` block from `plugins.configs` (or set `enabled: false`).
-2. Delete the library from your plugins folder.
+2. Delete the library from your plugins folder, or use **Delete** on the Plugins page if you installed it from the store.
 3. Optional: delete the history folder, `claude-use-it-or-lose-it` in your user config folder (or the folder you set).
 
 CLIProxyAPI goes back to its built-in routing.
@@ -136,6 +163,7 @@ Yes. Turn on `Watch only, do not change routing`. The status page shows what it 
 
 **An account shows "Login expired". What do I do?**
 Log in to that account again on the Auth Files page. Until then the plugin cannot read its usage.
+Right after the computer wakes from sleep, an account can briefly show "Renewing login" while the proxy renews its token. That clears by itself; it is not an expired login.
 
 ## License
 

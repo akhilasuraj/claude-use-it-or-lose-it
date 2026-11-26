@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "claude-use-it-or-lose-it",
+      "name": "Use It or Lose It",
+      "description": "Routes each request to the Claude account whose weekly limit resets soonest, so quota that is about to expire is used first. Reorders accounts by itself after every reset, moves full accounts to the end, keeps usage current from response headers, and shows each account's pace and the quota that would go unused on a status page. Includes a watch-only mode.",
+      "author": "Akhila Abesinghe",
+      "repository": "https://github.com/akhilasuraj/claude-use-it-or-lose-it",
+      "logo": "https://akhilasuraj.github.io/claude-use-it-or-lose-it/favicon.svg",
+      "homepage": "https://akhilasuraj.github.io/claude-use-it-or-lose-it/",
+      "license": "MIT",
+      "tags": ["Scheduler", "Quota", "Dashboard", "Claude"],
+      "locales": {
+        "zh-CN": {
+          "description": "将每个请求路由至每周配额最先重置的 Claude 账号，优先消耗即将过期的额度。每次重置后自动重新排序，用尽额度的账号移至队尾，通过响应头实时更新用量，并在状态页展示各账号的消耗速度和重置时将被浪费的额度。支持仅观察模式。"
+        }
+      }
+    }
+  ]
+}

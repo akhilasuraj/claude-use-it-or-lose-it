@@ -468,24 +468,35 @@ section { padding-block: clamp(2.5rem, 1.75rem + 3.5vw, 4.5rem); }
   <section id="install" aria-labelledby="install-title">
     <div class="wrap">
       <h2 id="install-title">Install in 3 steps</h2>
-      <p class="lead">You need CLIProxyAPI with plugins enabled and at least one Claude account logged in.</p>
+      <p class="lead">You need CLIProxyAPI v8.0.29 or newer and at least one Claude account logged in. The plugin store installs the right build for your system and tells you when an update is out.</p>
       <ol class="steps">
         <li class="glass">
           <div>
-            <h3>Download</h3>
-            <p>Get the zip for your platform from the <a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest">latest GitHub release</a>. Builds are available for Windows, macOS and Linux, on amd64 and arm64.</p>
+            <h3>Add the plugin's registry</h3>
+            <p>Add this registry to <code>config.yaml</code>. The official registry stays included.</p>
+            <div class="code">
+              <span class="label">config.yaml</span>
+              <span class="copy">
+                <button type="button" class="copy-button" command="--copy" commandfor="registry-snippet" aria-label="Copy registry snippet">Copy</button>
+                <span class="tip" role="status"></span>
+              </span>
+<pre tabindex="0" aria-label="config.yaml registry example"><code id="registry-snippet">plugins:
+  enabled: true
+  store-sources:
+    - "https://akhilasuraj.github.io/claude-use-it-or-lose-it/registry.json"</code></pre>
+            </div>
           </div>
         </li>
         <li class="glass">
           <div>
-            <h3>Copy the library into your plugins folder</h3>
-            <p>Unzip it and put the library file (<code>claude-use-it-or-lose-it.dll</code>, <code>.so</code> or <code>.dylib</code>) in the folder set by <code>plugins.dir</code> in your CLIProxyAPI <code>config.yaml</code>.</p>
+            <h3>Install from the plugin store</h3>
+            <p>Open the plugin store in the management panel, find <strong>Use It or Lose It</strong> and click <strong>Install</strong>. Later, <strong>Update</strong> installs new releases without a restart.</p>
           </div>
         </li>
         <li class="glass">
           <div>
-            <h3>Enable it in config.yaml</h3>
-            <p>Add the plugin under <code>plugins.configs.claude-use-it-or-lose-it</code>, then restart CLIProxyAPI. The status page appears in the management panel.</p>
+            <h3>Adjust settings if you like</h3>
+            <p>Every setting is optional and can also be changed on the Plugins page. The status page appears in the management panel. Prefer a manual install? Download the zip from the <a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest">latest release</a> and follow the <a href="https://github.com/akhilasuraj/claude-use-it-or-lose-it#by-hand">README</a>.</p>
             <div class="code">
               <span class="label">config.yaml</span>
               <span class="copy">
