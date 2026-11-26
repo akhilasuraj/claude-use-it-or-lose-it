@@ -14,11 +14,12 @@ This plugin works out the order again for every request, from each account's rea
 
 CLIProxyAPI gives the plugin the accounts it considers usable for the request: enabled, supporting the model, and not cooling down after a rate limit. Accounts from every priority level are included. The plugin sorts them by these rules, in this order:
 
-1. **Full accounts last.** An account is full when its 5-hour or weekly limit is at 100% and hasn't reset yet. You can turn this rule off.
-2. **Accounts with usage data before accounts without.**
-3. **Soonest weekly reset first.**
-4. **Higher CLIProxyAPI priority first.** Priority only breaks ties.
-5. **Account ID**, as the last tie-breaker.
+1. **Expired logins last.** An account whose login has expired can't serve requests.
+2. **Full accounts next to last.** An account is full when its 5-hour or weekly limit is at 100% and hasn't reset yet, or when Anthropic has just refused a request on that limit. You can turn this rule off.
+3. **Accounts with usage data before accounts without.**
+4. **Soonest weekly reset first.**
+5. **Higher CLIProxyAPI priority first.** Priority only breaks ties.
+6. **Account ID**, as the last tie-breaker.
 
 It then sends the request to the first account. When an account resets, its next reset is a week away, so it moves to the back by itself.
 
@@ -35,7 +36,7 @@ While the plugin makes the choice, your `routing.strategy` setting and account p
 - **Live updates.** Every Claude response carries `anthropic-ratelimit-unified-*` headers with the 5-hour and weekly usage. The plugin reads them from each finished request, so the numbers stay current between checks without extra calls.
 - **Never per request.** Picking an account only reads cached data. It never waits on the network.
 
-If a check shows that an account CLIProxyAPI is still holding in cooldown has room again, for example after an early reset, the plugin clears that cooldown so the account can be used right away. It does this at most once every 30 minutes per account.
+When Anthropic refuses a request with a rate limit, CLIProxyAPI holds that account back (a cooldown) and offers it again later. Anthropic can do this even when the usage figures still show room, so the plugin leaves such a cooldown alone. The status page shows the account as *Paused* as soon as the refusal comes in. The one exception: if an account's readings showed a limit at 100% and a check then shows it reset early, the plugin clears the cooldown so the account can be used right away. It does this at most once every 30 minutes per account.
 
 ## Install
 
@@ -54,7 +55,7 @@ You need CLIProxyAPI v8.0.29 or newer, with at least one Claude account logged i
 
 2. In the management panel, open the plugin store, find **Use It or Lose It** (marked third-party) and click **Install**.
 
-The store downloads the build for your system and checks it against the release's `checksums.txt`. When a new version is released, the store shows an **Update** button. Updates aren't installed automatically. Each version is saved under its own file name, such as `claude-use-it-or-lose-it-v1.1.0.dll`, so CLIProxyAPI switches to the new version without a restart.
+The store downloads the build for your system and checks it against the release's `checksums.txt`. When a new version is released, the store shows an **Update** button. Updates aren't installed automatically. Each version is saved under its own file name, such as `claude-use-it-or-lose-it-v1.1.1.dll`, so CLIProxyAPI switches to the new version without a restart.
 
 If you installed the plugin by hand before, delete that copy from your plugins folder, so only one copy is left.
 
@@ -88,22 +89,22 @@ Every setting is optional. You can also change them on the Plugins page of the m
 | Setting | Values | Default | What it does |
 |---|---|---|---|
 | `Check usage every (minutes)` | integer, at least 5 | `30` | How often usage is checked with Anthropic. Lower values aren't needed in normal use, because live updates fill the gaps. |
-| `Move full accounts to the bottom` | `true`, `false` | `true` | Accounts at 100% of their 5-hour or weekly limit are tried last. |
-| `Watch only, do not change routing` | `true`, `false` | `false` | The plugin works out its pick and shows it on the status page, but requests keep using the normal routing. |
+| `Move full accounts to the bottom` | on or off | `true` | Accounts at 100% of their 5-hour or weekly limit are tried last. |
+| `Watch only, do not change routing` | on or off | `false` | The plugin works out its pick and shows it on the status page, but requests keep using the normal routing. |
 | `Folder for usage history` | path | empty | Where `history.json` is kept. If empty, a `claude-use-it-or-lose-it` folder in your user config folder is used (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux). In Docker, point it at a mounted volume. |
 
 The weekly limit used is the one that applies across all models. Claude plans no longer have separate Opus or Sonnet weekly limits. The Fable limit on Max and Ultra plans is a share of the all-models weekly limit, not extra quota, and the plugin doesn't track it separately. Versions before 1.1.0 had a `Weekly limit to order by` setting. If your `config.yaml` still has it, it's ignored.
 
-Older snake_case keys (`refresh_interval_minutes`, `deprioritize_exhausted`) are still accepted.
+On/off settings accept `true`/`false`, `yes`/`no`, `on`/`off` or `1`/`0`. An unclear value keeps the default. Older snake_case keys (`refresh_interval_minutes`, `deprioritize_exhausted`) are still accepted.
 
 ## Status page
 
 In the management panel, choose **Use It or Lose It** from the plugin menu. The page follows the panel's light and dark themes, works at phone width, and updates in place every minute. It shows:
 
-- the account in use now, or the account it would pick in watch-only mode;
-- the pick order, with each account's weekly reset, weekly and 5-hour usage, and its state: *In use*, *Next*, *Standby*, *Limit reached*, *No reset data*, *Renewing login*, *Check failed* or *Login expired*;
+- the account in use now, or the account it would pick in watch-only mode. An account CLIProxyAPI is cooling down is never shown as in use, because the proxy doesn't offer it. The page learns about a cooldown from the refused request itself, and about its end from the next pick, so it doesn't wait for the next usage check;
+- the pick order, with each account's weekly reset, weekly and 5-hour usage, and its state: *In use*, *Next*, *Standby*, *Paused*, *Limit reached*, *No data yet*, *Renewing login*, *Check failed* or *Login expired*. Dates are shown in your browser's time zone;
 - for each account, how many requests the plugin picked it for and how many were actually sent with it (both counts start at zero when CLIProxyAPI starts);
-- a chart of this week's usage for each account, with the current pace drawn on to the reset. It shows when the account would run out at that pace, or how much of its weekly limit would go unused. The pace needs at least 2 hours of readings in the current week;
+- a chart of this week's usage for each account, with the current pace drawn on to the reset. It shows when the account would run out at that pace, or how much of its weekly limit would go unused. The pace needs readings from the last day that span at least 2 hours;
 - a **Refresh now** button, which checks usage at most once a minute.
 
 ![Status page, light theme](docs/assets/screenshot-light.png)
@@ -111,16 +112,16 @@ In the management panel, choose **Use It or Lose It** from the plugin menu. The 
 
 ## Expired logins
 
-If an account's usage can't be read, the plugin keeps that account's last readings, so one failed check doesn't reorder anything, and tries again after 2 minutes. An account is shown as **Login expired** only when:
+If an account's usage can't be read, the plugin keeps ordering it by its last readings, so a failed check doesn't reorder anything. It retries every 2 minutes, up to 8 times in a row, then goes back to the normal interval. The status page shows **Check failed** once the same failure happens twice in a row. An account is shown as **Login expired** only when:
 
 - its credential has no access token,
 - Anthropic rejects the token (HTTP 401) on two checks in a row,
-- the token stays expired through 8 checks in a row (about 15 minutes), or
+- the stored token stays expired through 8 checks in a row (about 15 minutes), or
 - CLIProxyAPI itself marks the credential as failing with a login or refresh error.
 
 Right after the computer wakes from sleep, an account can show **Renewing login** for a short while. CLIProxyAPI renews tokens on its own schedule, and the plugin waits for that instead of using an expired token. As soon as a request is served with the account, any warning is cleared.
 
-To fix a real expired login, log in to the account again on the Auth Files page.
+An account with an expired login can't serve requests, so it's ordered last. To fix it, log in to the account again on the Auth Files page.
 
 ## Good to know
 
@@ -138,12 +139,12 @@ The plugin uses these CLIProxyAPI host calls:
 | `host.auth.list` | Finds the Claude accounts and reads their priority, status and e-mail address. |
 | `host.auth.get` | Reads a Claude credential. Only the access token and its expiry time are used, and only to call Anthropic's usage endpoint. |
 | Usage records | Reads the provider, account and response headers of each finished request, to pick up the rate-limit headers. |
-| `host.routing.reset_cooldown` | Clears the cooldown on an account that has room again. |
+| `host.routing.reset_cooldown` | Clears the cooldown on an account whose full limit was reset early. |
 | `host.log` | Writes its own lines to the CLIProxyAPI log. |
 
 **Network:** the only outside request is `GET https://api.anthropic.com/api/oauth/usage`, sent with each account's own token. There's no telemetry, and nothing is sent anywhere else.
 
-**Disk:** it writes one file, `history.json`. For each account it stores the e-mail address, usage percentages, reset times and timestamps, with at most one reading per account every 10 minutes. Readings older than 15 days are removed.
+**Disk:** it writes one file, `history.json`. For each account it stores the e-mail address, usage percentages, reset times and timestamps, with one reading per account for each 10-minute slot (two in the slot where a weekly limit resets). Readings older than 15 days are removed.
 
 ## Compatibility
 

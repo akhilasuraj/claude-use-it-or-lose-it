@@ -36,7 +36,7 @@
   "description": "A CLIProxyAPI plugin that sends each request to the Claude account whose weekly limit resets soonest, so quota that is about to reset gets used instead of wasted.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Windows, macOS, Linux",
-  "softwareVersion": "1.1.0",
+  "softwareVersion": "1.1.1",
   "url": "https://akhilasuraj.github.io/claude-use-it-or-lose-it/",
   "downloadUrl": "https://github.com/akhilasuraj/claude-use-it-or-lose-it/releases/latest",
   "codeRepository": "https://github.com/akhilasuraj/claude-use-it-or-lose-it",
@@ -397,7 +397,7 @@ section { padding-block: clamp(2.5rem, 1.75rem + 3.5vw, 4.5rem); }
             <a class="btn ghost" href="https://github.com/akhilasuraj/claude-use-it-or-lose-it">View on GitHub</a>
           </div>
           <ul class="chips" aria-label="Release details">
-            <li class="chip">Version 1.1.0</li>
+            <li class="chip">Version 1.1.1</li>
             <li class="chip">MIT license</li>
             <li class="chip">Windows, macOS, Linux</li>
             <li class="chip">amd64 and arm64</li>
@@ -448,8 +448,8 @@ section { padding-block: clamp(2.5rem, 1.75rem + 3.5vw, 4.5rem); }
       <ol class="rules">
         <li class="glass"><p><strong>Soonest weekly reset first.</strong> The account whose weekly limit resets next goes to the top, so its remaining quota is used before it expires.</p></li>
         <li class="glass"><p><strong>The order fixes itself.</strong> When an account resets, its next reset is a week away, so it moves to the back by itself. Unlike a fixed priority, nothing needs reordering by hand. Priorities only break ties.</p></li>
-        <li class="glass"><p><strong>Full accounts go to the bottom.</strong> An account at 100% of its 5-hour or weekly limit is moved below every account that still has room.</p></li>
-        <li class="glass"><p><strong>Accounts with room again come back.</strong> If a limit resets early, the plugin clears the proxy's cooldown for that account so it can be picked again.</p></li>
+        <li class="glass"><p><strong>Full accounts go to the bottom.</strong> An account at 100% of its 5-hour or weekly limit is moved below every account that still has room. Only an account with an expired login goes lower.</p></li>
+        <li class="glass"><p><strong>Accounts with room again come back.</strong> If a full limit resets early, the plugin clears the proxy's cooldown for that account so it can be picked again. Other cooldowns are left to the proxy.</p></li>
         <li class="glass"><p><strong>No data, no change.</strong> If there is no usage data for the first account, or a request could also go to another provider, CLIProxyAPI's normal routing is used.</p></li>
       </ol>
     </div>
@@ -462,7 +462,7 @@ section { padding-block: clamp(2.5rem, 1.75rem + 3.5vw, 4.5rem); }
         <article class="card glass"><span class="bubble" style="--fill:35%" aria-hidden="true"></span><h3>Reset-aware routing</h3><p>Sends each request to the Claude account whose weekly limit resets soonest.</p></article>
         <article class="card glass"><span class="bubble tone-warm" style="--fill:55%" aria-hidden="true"></span><h3>Light on Anthropic's API</h3><p>Checks usage every 30 minutes, never per request, and updates live from Anthropic's rate-limit response headers.</p></article>
         <article class="card glass"><span class="bubble tone-hot" style="--fill:100%" aria-hidden="true"></span><h3>Full accounts wait</h3><p>Accounts that hit their 5-hour or weekly limit move to the bottom until they have room again.</p></article>
-        <article class="card glass"><span class="bubble" style="--fill:15%" aria-hidden="true"></span><h3>Cooldowns cleared</h3><p>When an account has room again after an early reset, the proxy's cooldown for it is cleared.</p></article>
+        <article class="card glass"><span class="bubble" style="--fill:15%" aria-hidden="true"></span><h3>Cooldowns cleared</h3><p>When a full limit is reset early, the proxy's cooldown for that account is cleared.</p></article>
         <article class="card glass"><span class="bubble" style="--fill:48%" aria-hidden="true"></span><h3>Status page</h3><p>Inside the CLIProxyAPI management panel: pick order, burn pace, and how much would go unused at reset.</p></article>
         <article class="card glass"><span class="bubble tone-warm" style="--fill:70%" aria-hidden="true"></span><h3>15 days of history</h3><p>Weekly usage charts for each account, plus a warning when an account's login has expired.</p></article>
         <article class="card glass"><span class="bubble" style="--fill:25%" aria-hidden="true"></span><h3>Watch-only mode</h3><p>See which account it would pick without changing how requests are routed.</p></article>

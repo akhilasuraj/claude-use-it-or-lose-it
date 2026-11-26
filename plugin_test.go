@@ -20,19 +20,20 @@ func TestChooseSoonestWeeklyReset(t *testing.T) {
 		"c": {Windows: map[string]usageWindow{"seven_day": {Utilization: 0, ResetsAt: now.Add(3 * 24 * time.Hour)}}},
 	}
 	// b has the lowest priority but resets soonest: it must still win.
-	id, _ := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 10), cand("b", -27), cand("c", 0)}, accounts, pluginConfig{}, now)
+	id := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 10), cand("b", -27), cand("c", 0)}, accounts, pluginConfig{}, now)
 	if id != "b" {
 		t.Fatalf("got %q, want b", id)
 	}
 }
 
-func TestChooseSkipsExhaustedAndUnknown(t *testing.T) {
+func TestRankPutsFullAndExpiredLast(t *testing.T) {
 	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	accounts := map[string]accountState{
 		"full":  {Windows: map[string]usageWindow{"seven_day": {Utilization: 100, ResetsAt: now.Add(time.Hour)}}},
 		"five":  {Windows: map[string]usageWindow{"seven_day": {Utilization: 20, ResetsAt: now.Add(2 * time.Hour)}, "five_hour": {Utilization: 100, ResetsAt: now.Add(time.Hour)}}},
 		"later": {Windows: map[string]usageWindow{"seven_day": {Utilization: 20, ResetsAt: now.Add(4 * 24 * time.Hour)}}},
-		"err":   {Error: "boom"},
+		// An expired login makes its readings meaningless, even a reset that comes first.
+		"err": {LoginExpired: true, Windows: map[string]usageWindow{"seven_day": {Utilization: 1, ResetsAt: now.Add(time.Minute)}}},
 	}
 	cands := []pluginapi.SchedulerAuthCandidate{cand("full", 0), cand("five", 0), cand("later", 0), cand("err", 99)}
 	ranked := rankCandidates(cands, accounts, pluginConfig{}, now)
@@ -40,14 +41,15 @@ func TestChooseSkipsExhaustedAndUnknown(t *testing.T) {
 	for _, r := range ranked {
 		got = append(got, r.id)
 	}
-	want := []string{"later", "err", "full", "five"}
+	// An expired login goes last, after the full accounts, since it cannot serve requests.
+	want := []string{"later", "full", "five", "err"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("order = %v, want %v", got, want)
 		}
 	}
 	off := false
-	id, _ := choose(cands, accounts, pluginConfig{DeprioritizeExhausted: &off}, now)
+	id := choose(cands, accounts, pluginConfig{DeprioritizeExhausted: &off}, now)
 	if id != "full" {
 		t.Fatalf("with deprioritize off got %q, want full", id)
 	}
@@ -55,16 +57,16 @@ func TestChooseSkipsExhaustedAndUnknown(t *testing.T) {
 
 func TestChooseFallsBack(t *testing.T) {
 	now := time.Now()
-	if id, _ := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 0)}, map[string]accountState{}, pluginConfig{}, now); id != "" {
+	if id := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 0)}, map[string]accountState{}, pluginConfig{}, now); id != "" {
 		t.Fatalf("no data: got %q, want fallback", id)
 	}
 	mixed := []pluginapi.SchedulerAuthCandidate{cand("a", 0), {ID: "x", Provider: "codex"}}
 	accounts := map[string]accountState{"a": {Windows: map[string]usageWindow{"seven_day": {ResetsAt: now.Add(time.Hour)}}}}
-	if id, _ := choose(mixed, accounts, pluginConfig{}, now); id != "" {
+	if id := choose(mixed, accounts, pluginConfig{}, now); id != "" {
 		t.Fatalf("mixed providers: got %q, want fallback", id)
 	}
 	stale := map[string]accountState{"a": {Windows: map[string]usageWindow{"seven_day": {ResetsAt: now.Add(-time.Minute)}}}}
-	if id, _ := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 0)}, stale, pluginConfig{}, now); id != "" {
+	if id := choose([]pluginapi.SchedulerAuthCandidate{cand("a", 0)}, stale, pluginConfig{}, now); id != "" {
 		t.Fatalf("past reset: got %q, want fallback", id)
 	}
 }
@@ -90,8 +92,13 @@ func TestParseUsage(t *testing.T) {
 }
 
 func TestPageRenders(t *testing.T) {
-	if len(renderPage("hi", time.Now())) == 0 {
-		t.Fatal("empty page")
+	resetGlobals(t)
+	t.Cleanup(func() { resetGlobals(t) })
+	page := string(renderPage("hi", time.Now()))
+	for _, want := range []string{`<p class="notice">hi</p>`, "No enabled Claude accounts found yet."} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("page lacks %q", want)
+		}
 	}
 }
 
@@ -152,10 +159,21 @@ func TestConfigFieldNamesAreReadable(t *testing.T) {
 		if strings.Contains(f.Name, "_") {
 			t.Errorf("field %q shows as a raw key", f.Name)
 		}
-		for _, v := range f.EnumValues {
-			if strings.Contains(v, "_") {
-				t.Errorf("option %q shows as a raw key", v)
-			}
-		}
+	}
+}
+
+func TestNoDataRanksAheadOfFull(t *testing.T) {
+	now := time.Now()
+	accounts := map[string]accountState{
+		"full": {Windows: map[string]usageWindow{"seven_day": {Utilization: 100, ResetsAt: now.Add(time.Hour)}}},
+		"new":  {},
+	}
+	ranked := rankCandidates([]pluginapi.SchedulerAuthCandidate{cand("full", 0), cand("new", 0)}, accounts, pluginConfig{}, now)
+	if ranked[0].id != "new" {
+		t.Fatalf("an account without data must come before a full one, got %v", ranked)
+	}
+	// With no data first, the plugin hands the choice to the normal routing.
+	if id := choose([]pluginapi.SchedulerAuthCandidate{cand("full", 0), cand("new", 0)}, accounts, pluginConfig{}, now); id != "" {
+		t.Fatalf("choose = %q; want the normal routing", id)
 	}
 }

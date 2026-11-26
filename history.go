@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"os"
@@ -20,6 +21,7 @@ const (
 	paceLookback     = 24 * time.Hour      // burn rate is the average over the last day
 	paceMinSpan      = 2 * time.Hour       // shorter spans give no rate
 	cycleMatch       = 30 * time.Minute    // readings whose reset time is this close share a cycle
+	weekLength       = 7 * 24 * time.Hour  // length of a weekly limit cycle
 )
 
 // sample is one stored usage reading for an account.
@@ -35,11 +37,13 @@ func (s sample) time() time.Time { return time.Unix(s.T, 0) }
 // burn rate. Accounts are keyed by their label (the e-mail address), which survives a new
 // login, unlike the credential ID.
 type historyStore struct {
-	mu       sync.Mutex
-	path     string
-	isLoaded bool
-	dirty    bool
-	accounts map[string][]sample
+	mu          sync.Mutex
+	saveMu      sync.Mutex // serialises file writes, so an older snapshot never lands last
+	path        string
+	isLoaded    bool
+	pendingLoad bool // the file exists but could not be read; it must be merged before writing
+	dirty       bool
+	accounts    map[string][]sample
 }
 
 var history = &historyStore{accounts: map[string][]sample{}}
@@ -60,7 +64,7 @@ func (c pluginConfig) historyPath() string {
 }
 
 func historyKey(acc accountState) string {
-	return strings.ToLower(firstNonEmpty(acc.Label, acc.FileName, acc.ID))
+	return strings.ToLower(acc.displayName())
 }
 
 func (h *historyStore) loaded() bool {
@@ -72,27 +76,56 @@ func (h *historyStore) loaded() bool {
 // load switches to the file at path. Readings already in memory are kept and merged, so
 // changing the folder moves the history rather than losing it.
 func (h *historyStore) load(path string) {
+	// Taken so a save that is re-reading the old file cannot switch the path back afterwards.
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
+	h.loadFile(path)
+}
+
+// loadFile does the work of load; the caller holds saveMu.
+func (h *historyStore) loadFile(path string) {
+	// Read and decode without holding the lock, and log only after releasing it.
+	raw, errRead := os.ReadFile(path)
+	var data historyFileData
+	var errDecode error
+	if errRead == nil {
+		errDecode = json.Unmarshal(raw, &data)
+	}
+	if errDecode != nil {
+		// Keep the broken file for inspection instead of overwriting it with a fresh one.
+		if errRename := os.Rename(path, path+".bad"); errRename != nil {
+			errDecode = fmt.Errorf("%w (and moving it aside failed: %v)", errDecode, errRename)
+			errRead = errRename // treat it as unreadable, so save leaves it alone
+		}
+	}
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.path = path
 	h.isLoaded = true
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			hostLog("warn", pluginName+": reading usage history failed", map[string]any{"path": path, "error": err.Error()})
+	// A file that exists but cannot be read right now (for example locked by a virus scanner)
+	// must not be replaced by the readings in memory; save tries to read it again first.
+	h.pendingLoad = errRead != nil && !errors.Is(errRead, fs.ErrNotExist)
+	hadReadings := len(h.accounts) > 0
+	if errRead == nil && errDecode == nil {
+		for key, samples := range data.Accounts {
+			h.accounts[key] = mergeSamples(h.accounts[key], samples)
 		}
-		h.dirty = len(h.accounts) > 0
-		return
+		h.prune(time.Now())
 	}
-	var data historyFileData
-	if err := json.Unmarshal(raw, &data); err != nil {
-		hostLog("warn", pluginName+": usage history is unreadable, starting fresh", map[string]any{"path": path, "error": err.Error()})
-		return
+	// Readings already in memory are not in this file yet.
+	h.dirty = h.dirty || hadReadings
+	h.mu.Unlock()
+
+	switch {
+	case errRead != nil && !errors.Is(errRead, fs.ErrNotExist):
+		msg := errRead.Error()
+		if errDecode != nil {
+			msg = errDecode.Error()
+		}
+		hostLog("warn", pluginName+": reading usage history failed, it is left as it is", map[string]any{"path": path, "error": msg})
+	case errDecode != nil:
+		hostLog("warn", pluginName+": usage history is unreadable, moved it to .bad and starting fresh", map[string]any{"path": path, "error": errDecode.Error()})
 	}
-	for key, samples := range data.Accounts {
-		h.accounts[key] = mergeSamples(h.accounts[key], samples)
-	}
-	h.prune(time.Now())
 }
 
 func mergeSamples(a, b []sample) []sample {
@@ -132,10 +165,13 @@ func (h *historyStore) add(acc accountState, at time.Time) {
 			return
 		}
 		if last.time().Truncate(historyBucket).Equal(at.Truncate(historyBucket)) && sameCycle(last, s) {
-			// Keep readings from other windows the newer one lacks.
+			// Keep readings from other windows the newer one lacks, with their reset times.
 			for k, v := range last.U {
 				if _, ok := s.U[k]; !ok {
 					s.U[k] = v
+					if r, ok := last.R[k]; ok {
+						s.R[k] = r
+					}
 				}
 			}
 			list[n-1] = s
@@ -151,7 +187,7 @@ func (h *historyStore) add(acc accountState, at time.Time) {
 
 // sameCycle reports whether two readings belong to the same weekly cycle.
 func sameCycle(a, b sample) bool {
-	ra, rb := a.R["seven_day"], b.R["seven_day"]
+	ra, rb := a.R[allModelsWindow], b.R[allModelsWindow]
 	return ra == 0 || rb == 0 || math.Abs(float64(ra-rb)) < cycleMatch.Seconds()
 }
 
@@ -172,13 +208,27 @@ func (h *historyStore) prune(now time.Time) {
 // save writes the history if it changed. It writes to a temporary file first so a crash
 // mid-write never leaves a broken file behind.
 func (h *historyStore) save() {
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
+	h.mu.Lock()
+	pending, path := h.pendingLoad, h.path
+	h.mu.Unlock()
+	if pending {
+		h.loadFile(path)
+		h.mu.Lock()
+		pending = h.pendingLoad
+		h.mu.Unlock()
+		if pending {
+			return // still unreadable; keep the readings in memory and try again next time
+		}
+	}
 	h.mu.Lock()
 	if !h.dirty || h.path == "" {
 		h.mu.Unlock()
 		return
 	}
 	raw, err := json.Marshal(historyFileData{Version: 1, Accounts: h.accounts})
-	path := h.path
+	path = h.path
 	h.dirty = false
 	h.mu.Unlock()
 	if err == nil {
@@ -206,6 +256,12 @@ func writeFileAtomic(path string, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
+	// Flush to disk before the rename, so a power loss cannot leave an empty file in place.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return err
@@ -229,7 +285,7 @@ func (h *historyStore) cycle(key, window string, resetsAt time.Time) []point {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var out []point
-	start := resetsAt.Add(-7 * 24 * time.Hour)
+	start := resetsAt.Add(-weekLength)
 	for _, s := range h.accounts[key] {
 		u, ok := s.U[window]
 		if !ok {
@@ -250,13 +306,13 @@ func (h *historyStore) cycle(key, window string, resetsAt time.Time) []point {
 
 // pace describes how fast an account is using its weekly limit and where that leads.
 type pace struct {
-	Known     bool
-	Full      bool      // the limit is already reached
-	PerHour   float64   // percentage points per hour, averaged over the last day
-	Projected float64   // percent used at reset at the current pace, capped at 100
-	Unused    float64   // percent left over at reset at the current pace
-	RunsOutAt time.Time // when the limit is reached at the current pace, if before reset
-	NeedPerHr float64   // pace that would use the whole limit exactly by reset
+	Known         bool
+	Full          bool      // the limit is already reached
+	PerHour       float64   // percentage points per hour, averaged over the last day
+	Projected     float64   // percent used at reset at the current pace, capped at 100
+	Unused        float64   // percent left over at reset at the current pace
+	RunsOutAt     time.Time // when the limit is reached at the current pace, if before reset
+	NeededPerHour float64   // pace that would use the whole limit exactly by reset
 }
 
 // paceFor works out the burn rate from the readings of the current cycle.
@@ -266,11 +322,17 @@ func paceFor(points []point, cur usageWindow, now time.Time) pace {
 	if cur.ResetsAt.IsZero() || left <= 0 {
 		return p
 	}
-	p.NeedPerHr = math.Max(0, 100-cur.Utilization) / left
+	p.NeededPerHour = math.Max(0, 100-cur.Utilization) / left
 	if cur.Utilization >= 100 {
 		return pace{Known: true, Full: true, Projected: 100}
 	}
-	from := now.Add(-paceLookback)
+	// The rate runs from the oldest reading of the last day to the current reading, so it
+	// needs readings that really span paceMinSpan; time after the last reading is not counted.
+	end := cur.At
+	if end.IsZero() || end.After(now) {
+		end = now
+	}
+	from := end.Add(-paceLookback)
 	var first *point
 	for i := range points {
 		if !points[i].At.Before(from) {
@@ -278,11 +340,11 @@ func paceFor(points []point, cur usageWindow, now time.Time) pace {
 			break
 		}
 	}
-	if first == nil || now.Sub(first.At) < paceMinSpan {
+	if first == nil || end.Sub(first.At) < paceMinSpan {
 		return p
 	}
 	p.Known = true
-	p.PerHour = math.Max(0, (cur.Utilization-first.Pct)/now.Sub(first.At).Hours())
+	p.PerHour = math.Max(0, (cur.Utilization-first.Pct)/end.Sub(first.At).Hours())
 	projected := cur.Utilization + p.PerHour*left
 	if projected >= 100 {
 		p.Projected = 100

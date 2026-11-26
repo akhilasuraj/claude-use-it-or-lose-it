@@ -52,8 +52,22 @@ const (
 // chartJS adds the crosshair and tooltip. Values are inserted with textContent.
 const chartJS = `
 (()=>{
+const whenFmt=new Intl.DateTimeFormat(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+const dayFmt=new Intl.DateTimeFormat(undefined,{weekday:'short'});
+// Day labels at the viewer's local midnights, replacing the ones placed by the proxy.
+function days(svg){
+  const t0=Number(svg.dataset.t0),t1=Number(svg.dataset.t1),x0=Number(svg.dataset.x0),w=Number(svg.dataset.w);
+  if(!(t1>t0)||!(w>0))return;
+  svg.querySelectorAll('.c-day').forEach(n=>n.remove());
+  const ns='http://www.w3.org/2000/svg';const d=new Date(t0);d.setHours(24,0,0,0);
+  for(;d.getTime()<t1;d.setDate(d.getDate()+1)){
+    const x=x0+(d.getTime()-t0)/(t1-t0)*w;if(x-x0<14||x0+w-x<14)continue;
+    const t=document.createElementNS(ns,'text');t.setAttribute('class','c-tick c-day');t.setAttribute('x',x.toFixed(1));
+    t.setAttribute('y',svg.dataset.ty);t.setAttribute('text-anchor','middle');t.textContent=dayFmt.format(d);svg.append(t);}
+}
 function bind(svg){
   if(svg.dataset.bound)return;svg.dataset.bound='1';
+  days(svg);
   let pts;try{pts=JSON.parse(svg.dataset.points||'[]');}catch{pts=[];}
   if(!pts.length)return;
   const card=svg.closest('.chart-card');const tip=document.createElement('div');tip.className='c-tip';tip.hidden=true;
@@ -66,7 +80,7 @@ function bind(svg){
   function show(i){idx=Math.max(0,Math.min(pts.length-1,i));const p=pts[idx];
     hair.setAttribute('x1',p[0]);hair.setAttribute('x2',p[0]);dot.setAttribute('cx',p[0]);dot.setAttribute('cy',p[1]);
     hair.style.display=dot.style.display='';
-    b.textContent=p[2];s.textContent=p[3];tip.hidden=false;
+    b.textContent=p[2];s.textContent=whenFmt.format(new Date(p[3]));tip.hidden=false;
     const box=svg.getBoundingClientRect(),cb=card.getBoundingClientRect(),vb=svg.viewBox.baseVal;
     const x=box.left-cb.left+p[0]/vb.width*box.width,y=box.top-cb.top+p[1]/vb.height*box.height-10;
     tip.style.left=Math.max(60,Math.min(cb.width-60,x))+'px';tip.style.top=y+'px';}
@@ -98,7 +112,7 @@ type chartInput struct {
 
 func renderChart(in chartInput) string {
 	reset := in.Window.ResetsAt
-	start := reset.Add(-7 * 24 * time.Hour)
+	start := reset.Add(-weekLength)
 	span := reset.Sub(start).Seconds()
 	plotW, plotH := chartW-chartL-chartR, chartH-chartT-chartB
 	x := func(t time.Time) float64 {
@@ -120,12 +134,13 @@ func renderChart(in chartInput) string {
 	}
 
 	var b bytes.Buffer
-	desc := fmt.Sprintf("Weekly usage for %s: %.0f%% used, resets %s.", in.Label, in.Window.Utilization, reset.Local().Format("Mon 2 Jan 15:04"))
+	// Times in the description are relative, so they read right in any time zone.
+	desc := fmt.Sprintf("Weekly usage for %s: %.0f%% used, resets in %s.", in.Label, in.Window.Utilization, humanDuration(reset.Sub(in.Now)))
 	if in.Pace.Full {
 		desc += " The limit is reached."
 	} else if in.Pace.Known {
 		if !in.Pace.RunsOutAt.IsZero() {
-			desc += " At the current pace the limit is reached " + in.Pace.RunsOutAt.Local().Format("Mon 15:04") + "."
+			desc += " At the current pace the limit is reached in " + humanDuration(in.Pace.RunsOutAt.Sub(in.Now)) + "."
 		} else {
 			desc += fmt.Sprintf(" At the current pace about %.0f%% will be unused.", in.Pace.Unused)
 		}
@@ -133,24 +148,25 @@ func renderChart(in chartInput) string {
 	type hoverPoint [4]any
 	hover := make([]hoverPoint, 0, len(pts))
 	for _, p := range pts {
-		hover = append(hover, hoverPoint{round1(x(p.At)), round1(y(p.Pct)), fmt.Sprintf("%.0f%% used", p.Pct), p.At.Local().Format("Mon 2 Jan, 15:04")})
+		// The time is sent as Unix milliseconds; the script formats it in the viewer's time zone.
+		hover = append(hover, hoverPoint{round1(x(p.At)), round1(y(p.Pct)), fmt.Sprintf("%.0f%% used", p.Pct), p.At.UnixMilli()})
 	}
 	hoverJSON, _ := json.Marshal(hover)
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %.0f %.0f" role="img" tabindex="0" aria-label="%s" data-points="%s" data-top="%.0f" data-bottom="%.0f">`,
-		chartW, chartH, html.EscapeString(desc), html.EscapeString(string(hoverJSON)), chartT, baseY)
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %.0f %.0f" role="img" tabindex="0" aria-label="%s" data-points="%s" data-top="%.0f" data-bottom="%.0f" data-x0="%.1f" data-w="%.1f" data-ty="%.1f" data-t0="%d" data-t1="%d">`,
+		chartW, chartH, html.EscapeString(desc), html.EscapeString(string(hoverJSON)), chartT, baseY, chartL, plotW, chartH-6, start.UnixMilli(), reset.UnixMilli())
 
 	// Grid and y ticks.
 	for _, pct := range []float64{0, 50, 100} {
 		fmt.Fprintf(&b, `<line class="c-grid" x1="%.1f" x2="%.1f" y1="%.1f" y2="%.1f"/>`, chartL, chartL+plotW, y(pct), y(pct))
 		fmt.Fprintf(&b, `<text class="c-tick" x="%.1f" y="%.1f" text-anchor="end" dominant-baseline="middle">%.0f%%</text>`, chartL-6, y(pct), pct)
 	}
-	// Day labels at local midnights.
-	day := time.Date(start.Local().Year(), start.Local().Month(), start.Local().Day(), 0, 0, 0, 0, time.Local).Add(24 * time.Hour)
-	for ; day.Before(reset); day = day.Add(24 * time.Hour) {
+	// Day labels at the proxy's local midnights; the script moves them to the viewer's.
+	ls := start.Local()
+	for day := time.Date(ls.Year(), ls.Month(), ls.Day()+1, 0, 0, 0, 0, time.Local); day.Before(reset); day = time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, time.Local) {
 		if x(day)-chartL < 14 || chartL+plotW-x(day) < 14 {
 			continue
 		}
-		fmt.Fprintf(&b, `<text class="c-tick" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`, x(day), chartH-6, day.Format("Mon"))
+		fmt.Fprintf(&b, `<text class="c-tick c-day" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`, x(day), chartH-6, day.Format("Mon"))
 	}
 
 	// Measured usage: area wash and line.
@@ -203,29 +219,20 @@ func renderChart(in chartInput) string {
 
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
-// paceSummary is the one-line reading of a pace, shared by the hero, table and charts.
+// paceSummary is the one-line reading of a pace, shared by the hero and the charts.
 func paceSummary(p pace, now time.Time) (headline, detail string) {
 	if !p.Known {
-		return "", "Needs about 2 hours of readings to estimate the pace."
+		return "", fmt.Sprintf("Needs about %.0f hours of readings from the last day to estimate the pace.", paceMinSpan.Hours())
 	}
 	if p.Full {
 		return "Limit reached", "Nothing more until the reset."
 	}
 	rate := fmt.Sprintf("%.1f points per hour", p.PerHour)
 	if !p.RunsOutAt.IsZero() {
-		return "Runs out " + shortWhen(p.RunsOutAt, now), "At " + rate + ", before the reset."
+		return "Runs out in " + humanDuration(p.RunsOutAt.Sub(now)), "At " + rate + ", before the reset."
 	}
 	if p.Unused < 0.5 {
 		return "On pace to use it all", "At " + rate + "."
 	}
-	return fmt.Sprintf("%.0f%% would go unused", p.Unused), fmt.Sprintf("At %s. Using it all needs %.1f.", rate, p.NeedPerHr)
-}
-
-// shortWhen names a moment within the coming week: "today 14:42", "Fri 14:42".
-func shortWhen(t, now time.Time) string {
-	lt, ln := t.Local(), now.Local()
-	if lt.YearDay() == ln.YearDay() && lt.Year() == ln.Year() {
-		return "today " + lt.Format("15:04")
-	}
-	return lt.Format("Mon 15:04")
+	return fmt.Sprintf("%.0f%% would go unused", p.Unused), fmt.Sprintf("At %s. Using it all needs %.1f.", rate, p.NeededPerHour)
 }

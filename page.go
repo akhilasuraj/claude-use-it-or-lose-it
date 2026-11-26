@@ -125,11 +125,11 @@ tbody th,tbody td{background:var(--glass);padding:14px;text-align:left;vertical-
   border-block:1px solid var(--line);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
 tbody th{border-inline-start:1px solid var(--line);border-radius:24px 0 0 24px;font-weight:600}
 tbody td:last-child{border-inline-end:1px solid var(--line);border-radius:0 24px 24px 0}
-tbody tr.is-next th,tbody tr.is-next td{background:color-mix(in srgb,var(--mint) 30%,var(--glass))}
+tbody tr.is-inuse th,tbody tr.is-inuse td{background:color-mix(in srgb,var(--mint) 30%,var(--glass))}
 .acct{display:flex;align-items:center;gap:12px;min-width:0}
 .rank{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:50%;font-weight:800;font-variant-numeric:tabular-nums;
   background:var(--lavender);color:#2b2540;box-shadow:inset 0 2px 0 rgb(255 255 255 / .5)}
-tr.is-next .rank{background:var(--mint);color:#1f3b30}
+tr.is-inuse .rank{background:var(--mint);color:#1f3b30}
 .name{display:block;overflow-wrap:break-word}
 .meta{display:block;color:var(--muted);font-size:12.5px;font-weight:400}
 .gauge{display:flex;align-items:center;gap:10px}
@@ -170,8 +170,8 @@ progress::-moz-progress-bar{background:var(--progress-bar-fill);border-radius:va
   tbody td:last-child{border:0;border-radius:0;padding-bottom:16px}
   tbody td{display:grid;grid-template-columns:8.5rem 1fr;gap:10px;align-items:center}
   tbody td::before{content:attr(data-label);font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-  tbody tr.is-next{background:color-mix(in srgb,var(--mint) 30%,var(--glass))}
-  tbody tr.is-next th,tbody tr.is-next td{background:transparent}
+  tbody tr.is-inuse{background:color-mix(in srgb,var(--mint) 30%,var(--glass))}
+  tbody tr.is-inuse th,tbody tr.is-inuse td{background:transparent}
 }
 
 /* ---- info popover ---- */
@@ -258,7 +258,9 @@ const fmt=ms=>{ms=Math.abs(ms);const s=Math.floor(ms/1e3),m=Math.floor(s/60),h=M
   if(s<60)return s+'s';if(m<60)return m+'m';if(h<48)return h+'h '+(m%60)+'m';return d+'d '+(h%24)+'h';};
 function tick(){const now=Date.now();
   document.querySelectorAll('time[data-in]').forEach(t=>{const ms=Date.parse(t.dateTime)-now;t.textContent=ms>0?'in '+fmt(ms):'now';});
-  document.querySelectorAll('time[data-ago]').forEach(t=>{t.textContent=fmt(now-Date.parse(t.dateTime))+' ago';});}
+  document.querySelectorAll('time[data-ago]').forEach(t=>{t.textContent=fmt(now-Date.parse(t.dateTime))+' ago';});
+  document.querySelectorAll('time[data-date]:not([data-local])').forEach(t=>{t.textContent=dateFmt.format(new Date(t.dateTime));t.dataset.local='';});}
+const dateFmt=new Intl.DateTimeFormat(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 let timer;
 function schedule(){clearTimeout(timer);const s=Number(root.dataset.reload)||60;timer=setTimeout(()=>pull('status'),s*1e3);}
 async function pull(url){
@@ -279,6 +281,7 @@ document.addEventListener('click',e=>{
 });
 // Motion switch lives in the info popover (outside #app), so it survives in-place refreshes.
 const sw=document.getElementById('motion');
+// The 'rs-motion' key predates the plugin's current name; renaming it would reset viewers' saved choice.
 try{if(localStorage.getItem('rs-motion')==='paused')root.dataset.motion='paused';}catch{}
 if(sw){sw.checked=root.dataset.motion!=='paused';
   sw.addEventListener('change',()=>{if(sw.checked)delete root.dataset.motion;else root.dataset.motion='paused';
@@ -314,6 +317,22 @@ func breakableLabel(label string) string {
 	return strings.Replace(html.EscapeString(label), "@", "<wbr>@", 1)
 }
 
+// dateTag shows a date and time. The page script rewrites it in the viewer's own time zone,
+// since the proxy may run elsewhere (for example in a container on UTC).
+func dateTag(t time.Time) string {
+	return timeTag(t, "data-date", t.Local().Format("Mon 2 Jan, 15:04"))
+}
+
+// inTag shows how long until t ("in 2h 5m"); agoTag how long since t ("3m ago"). The page
+// script keeps both current.
+func inTag(t, now time.Time) string {
+	return timeTag(t, "data-in", "in "+humanDuration(t.Sub(now)))
+}
+
+func agoTag(t, now time.Time) string {
+	return timeTag(t, "data-ago", humanDuration(now.Sub(t))+" ago")
+}
+
 func timeTag(t time.Time, attr, text string) string {
 	return fmt.Sprintf(`<time datetime="%s" %s>%s</time>`, t.UTC().Format(time.RFC3339), attr, html.EscapeString(text))
 }
@@ -338,7 +357,8 @@ func renderPage(notice string, now time.Time) []byte {
 	lastPickID, lastPickAt := stats.lastID, stats.lastAt
 	stats.mu.Unlock()
 
-	// Rank enabled accounts exactly the way the scheduler does.
+	// Rank enabled accounts the way the scheduler does. The scheduler is offered only accounts
+	// the proxy is not holding back; the in-use pick below skips those the same way.
 	var cands []pluginapi.SchedulerAuthCandidate
 	for id, acc := range accounts {
 		if !acc.Disabled {
@@ -346,13 +366,12 @@ func renderPage(notice string, now time.Time) []byte {
 		}
 	}
 	ranked := rankCandidates(cands, accounts, cfg, now)
-	window := allModelsWindow
 	paces := map[string]pace{}
 	cyclePoints := map[string][]point{}
 	for _, rc := range ranked {
 		acc := accounts[rc.id]
-		if w, ok := acc.Windows[window]; ok && w.ResetsAt.After(now) {
-			pts := history.cycle(historyKey(acc), window, w.ResetsAt)
+		if w, ok := acc.Windows[allModelsWindow]; ok && w.ResetsAt.After(now) {
+			pts := history.cycle(historyKey(acc), allModelsWindow, w.ResetsAt)
 			cyclePoints[rc.id] = pts
 			paces[rc.id] = paceFor(pts, w, now)
 		}
@@ -380,9 +399,9 @@ func renderPage(notice string, now time.Time) []byte {
 	case lastRun.IsZero():
 		b.WriteString(`First check pending`)
 	default:
-		fmt.Fprintf(&b, `Updated %s`, timeTag(lastRun, "data-ago", humanDuration(now.Sub(lastRun))+" ago"))
+		fmt.Fprintf(&b, `Updated %s`, agoTag(lastRun, now))
 		if !nextRun.IsZero() && nextRun.After(now) {
-			fmt.Fprintf(&b, ` · next %s`, timeTag(nextRun, "data-in", "in "+humanDuration(nextRun.Sub(now))))
+			fmt.Fprintf(&b, ` · next %s`, inTag(nextRun, now))
 		}
 	}
 	fmt.Fprintf(&b, ` · every %s, plus live updates from responses</div></div></div>`, humanDuration(cfg.interval()))
@@ -399,32 +418,51 @@ func renderPage(notice string, now time.Time) []byte {
 	for _, rc := range ranked {
 		if acc := accounts[rc.id]; acc.LoginExpired {
 			fmt.Fprintf(&b, `<section class="notice bad login" aria-label="Login expired"><b>Login expired: %s.</b> Log in to this account again on the Auth Files page. Until then this plugin cannot read its usage.</section>`,
-				html.EscapeString(firstNonEmpty(acc.Label, acc.FileName, acc.ID)))
+				html.EscapeString(acc.displayName()))
 		}
 	}
 	if cfg.Shadow {
 		b.WriteString(`<p class="notice shadow"><b>Watch only.</b> Requests use the normal routing. The page shows which account this plugin would pick, so you can compare before turning it on.</p>`)
 	}
 
+	// The proxy never offers an account it is cooling down, so the pick is the first ranked
+	// account that is not cooling down, provided it has reset data. The next one after it is
+	// the one that takes over.
+	inUse, next := -1, -1
+	for i, rc := range ranked {
+		if accounts[rc.id].Unavailable {
+			continue
+		}
+		if inUse < 0 {
+			if !rc.hasReset {
+				break
+			}
+			inUse = i
+			continue
+		}
+		next = i
+		break
+	}
+
 	// Hero: the account in use, i.e. the one the scheduler picks for every request right now.
-	b.WriteString(`<div class="hero-wrap"><section class="hero" aria-labelledby="next-title">`)
-	if len(ranked) > 0 && ranked[0].hasReset {
-		top := ranked[0]
+	b.WriteString(`<div class="hero-wrap"><section class="hero" aria-labelledby="inuse-title">`)
+	if inUse >= 0 {
+		top := ranked[inUse]
 		acc := accounts[top.id]
-		weekly := acc.Windows[window]
+		weekly := acc.Windows[allModelsWindow]
 		b.WriteString(bubbleHTML(weekly.Utilization, 120))
 		eyebrow := "In use"
 		if cfg.Shadow {
 			eyebrow = "Would pick"
 		}
 		fmt.Fprintf(&b, `<div><span class="eyebrow">%s</span>`, eyebrow)
-		fmt.Fprintf(&b, `<h2 id="next-title">%s</h2>`, html.EscapeString(firstNonEmpty(acc.Label, acc.FileName, acc.ID)))
+		fmt.Fprintf(&b, `<h2 id="inuse-title">%s</h2>`, html.EscapeString(acc.displayName()))
 		fmt.Fprintf(&b, `<p>Weekly limit resets %s · %s</p>`,
-			timeTag(weekly.ResetsAt, "data-in", "in "+humanDuration(weekly.ResetsAt.Sub(now))),
-			html.EscapeString(weekly.ResetsAt.Local().Format("Mon 2 Jan, 15:04")))
+			inTag(weekly.ResetsAt, now),
+			dateTag(weekly.ResetsAt))
 		b.WriteString(`<div class="chips">`)
 		fmt.Fprintf(&b, `<span class="chip">Weekly %.0f%% used</span>`, weekly.Utilization)
-		if fh, ok := acc.Windows["five_hour"]; ok {
+		if fh, ok := acc.Windows[fiveHourWindow]; ok {
 			fmt.Fprintf(&b, `<span class="chip">5-hour %.0f%% used</span>`, fh.Utilization)
 		}
 		if headline, _ := paceSummary(paces[top.id], now); headline != "" {
@@ -433,8 +471,23 @@ func renderPage(notice string, now time.Time) []byte {
 		b.WriteString(`</div></div>`)
 	} else {
 		b.WriteString(bubbleHTML(0, 120))
-		b.WriteString(`<div><span class="eyebrow">Waiting</span><h2 id="next-title">No reset data yet</h2>`)
-		b.WriteString(`<p>Until reset times arrive, requests use the normal routing strategy.</p></div>`)
+		title, text := "No data yet", "Until reset times arrive, requests use the normal routing strategy."
+		available, expired := 0, 0
+		for _, rc := range ranked {
+			if !accounts[rc.id].Unavailable {
+				available++
+				if rc.expired {
+					expired++
+				}
+			}
+		}
+		switch {
+		case len(ranked) > 0 && available == 0:
+			title, text = "Every account is cooling down", "The proxy is holding all accounts back. Requests can go out again when a cooldown ends."
+		case available > 0 && expired == available:
+			title, text = "Login expired", "Every available account needs a new login. Until then requests use the normal routing strategy."
+		}
+		fmt.Fprintf(&b, `<div><span class="eyebrow">Waiting</span><h2 id="inuse-title">%s</h2><p>%s</p></div>`, title, text)
 	}
 	b.WriteString(`</section></div>`)
 
@@ -451,20 +504,20 @@ func renderPage(notice string, now time.Time) []byte {
 	}
 	for i, rc := range ranked {
 		acc := accounts[rc.id]
-		label := firstNonEmpty(acc.Label, acc.FileName, acc.ID)
+		label := acc.displayName()
 		cls := ""
-		if i == 0 && rc.hasReset && !rc.exhausted {
-			cls = ` class="is-next"`
+		if i == inUse && !rc.exhausted {
+			cls = ` class="is-inuse"`
 		}
 		fmt.Fprintf(&b, `<tr%s style="--i:%d">`, cls, i)
 		fmt.Fprintf(&b, `<th scope="row"><span class="acct"><span class="rank"><span class="sr-only">Rank </span>%d</span><span><span class="name">%s</span><span class="meta">priority %d</span></span></span></th>`,
 			i+1, breakableLabel(label), acc.Priority)
 
-		weekly, hasWeekly := acc.Windows[window]
+		weekly, hasWeekly := acc.Windows[allModelsWindow]
 		if hasWeekly && !weekly.ResetsAt.IsZero() {
 			fmt.Fprintf(&b, `<td data-label="Weekly reset"><span><span class="pct">%s</span><span class="meta">%s</span></span></td>`,
-				timeTag(weekly.ResetsAt, "data-in", "in "+humanDuration(weekly.ResetsAt.Sub(now))),
-				html.EscapeString(weekly.ResetsAt.Local().Format("Mon 2 Jan, 15:04")))
+				inTag(weekly.ResetsAt, now),
+				dateTag(weekly.ResetsAt))
 		} else {
 			b.WriteString(`<td data-label="Weekly reset"><span class="meta">unknown</span></td>`)
 		}
@@ -475,10 +528,10 @@ func renderPage(notice string, now time.Time) []byte {
 			b.WriteString(`<td data-label="Weekly used"><span class="meta">–</span></td>`)
 		}
 
-		if fh, ok := acc.Windows["five_hour"]; ok {
+		if fh, ok := acc.Windows[fiveHourWindow]; ok {
 			reset := ""
 			if fh.ResetsAt.After(now) {
-				reset = `<span class="meta">resets ` + timeTag(fh.ResetsAt, "data-in", "in "+humanDuration(fh.ResetsAt.Sub(now))) + `</span>`
+				reset = `<span class="meta">resets ` + inTag(fh.ResetsAt, now) + `</span>`
 			}
 			fmt.Fprintf(&b, `<td data-label="5-hour used"><span><span class="pct">%.0f%%</span><progress class="%s" max="100" value="%.0f" aria-label="5-hour usage, %s"></progress>%s</span></td>`,
 				fh.Utilization, toneClass(fh.Utilization), math.Max(0, math.Min(100, fh.Utilization)), html.EscapeString(label), reset)
@@ -488,38 +541,42 @@ func renderPage(notice string, now time.Time) []byte {
 
 		pickNote := ""
 		if rc.id == lastPickID && !lastPickAt.IsZero() {
-			pickNote = `<span class="meta">last ` + timeTag(lastPickAt, "data-ago", humanDuration(now.Sub(lastPickAt))+" ago") + `</span>`
+			pickNote = `<span class="meta">last ` + agoTag(lastPickAt, now) + `</span>`
 		}
 		fmt.Fprintf(&b, `<td data-label="%s"><span><span class="num">%d</span><span class="meta">%d sent</span>%s</span></td>`, picksHead, counts[rc.id], served[rc.id], pickNote)
 
+		// Just the status word; any detail is in its tooltip.
+		pill := func(class, label, tip string) {
+			fmt.Fprintf(&b, `<span class="pill %s" title="%s">%s</span>`, class, html.EscapeString(tip), label)
+		}
 		b.WriteString(`<td data-label="Status"><span>`)
 		switch {
 		case acc.LoginExpired:
-			b.WriteString(`<span class="pill bad">Login expired</span><span class="meta">log in again on the Auth Files page</span>`)
-		case acc.Error == errTokenRenewing.Error():
-			b.WriteString(`<span class="pill idle">Renewing login</span><span class="meta">the proxy renews it, checking again soon</span>`)
-		case acc.Error != "":
-			fmt.Fprintf(&b, `<span class="pill bad">Check failed</span><span class="meta">%s</span>`, html.EscapeString(acc.Error))
+			pill("bad", "Login expired", "Log in again on the Auth Files page.")
+		case acc.Problem == problemRenewing:
+			pill("idle", "Renewing login", "Waiting for a new login token. Checking again soon.")
+		case acc.failureShown():
+			pill("bad", "Check failed", "Couldn't read usage: "+acc.Error)
+		case acc.Unavailable:
+			tip := "Paused after a rate limit."
+			if acc.RetryAfter.After(now) {
+				tip = "Paused after a rate limit, back in " + humanDuration(acc.RetryAfter.Sub(now)) + "."
+			}
+			pill("warn", "Paused", tip)
+		case rc.exhausted && i == inUse:
+			pill("warn", "Limit reached", "Still used, because no account has room.")
 		case rc.exhausted:
-			b.WriteString(`<span class="pill warn">Limit reached</span><span class="meta">moved to the bottom</span>`)
+			pill("warn", "Limit reached", "Used last until it resets.")
 		case !rc.hasReset:
-			b.WriteString(`<span class="pill idle">No reset data</span><span class="meta">ordered by priority</span>`)
-		case i == 0 && cfg.Shadow:
-			b.WriteString(`<span class="pill ok">Would pick</span>`)
-		case i == 0:
-			b.WriteString(`<span class="pill ok">In use</span>`)
-		case i == 1:
-			b.WriteString(`<span class="pill next">Next</span>`)
+			pill("idle", "No data yet", "No usage data yet.")
+		case i == inUse && cfg.Shadow:
+			pill("ok", "Would pick", "Watch-only mode: requests use the normal routing.")
+		case i == inUse:
+			pill("ok", "In use", "Requests go to this account.")
+		case i == next:
+			pill("next", "Next", "Takes over when this one can't be used.")
 		default:
-			b.WriteString(`<span class="pill idle">Standby</span>`)
-		}
-		if acc.Status != "" && acc.Status != "active" {
-			fmt.Fprintf(&b, `<span class="meta">host: %s</span>`, html.EscapeString(acc.Status))
-		}
-		// The header already shows when data was refreshed; only call out rows still showing
-		// older data because their latest fetch failed.
-		if !acc.FetchedAt.IsZero() && lastRun.Sub(acc.FetchedAt) > time.Minute {
-			fmt.Fprintf(&b, `<span class="meta">data from %s</span>`, timeTag(acc.FetchedAt, "data-ago", humanDuration(now.Sub(acc.FetchedAt))+" ago"))
+			pill("idle", "Standby", "Waiting its turn.")
 		}
 		b.WriteString(`</span></td></tr>`)
 	}
@@ -529,17 +586,17 @@ func renderPage(notice string, now time.Time) []byte {
 	var charts strings.Builder
 	for _, rc := range ranked {
 		acc := accounts[rc.id]
-		w, ok := acc.Windows[window]
-		if !ok || !w.ResetsAt.After(now) || acc.Error != "" {
+		w, ok := acc.Windows[allModelsWindow]
+		if !ok || !w.ResetsAt.After(now) || acc.LoginExpired {
 			continue
 		}
-		label := firstNonEmpty(acc.Label, acc.FileName, acc.ID)
+		label := acc.displayName()
 		headline, detail := paceSummary(paces[rc.id], now)
 		if headline == "" {
 			headline = fmt.Sprintf("%.0f%% used", w.Utilization)
 		}
 		fmt.Fprintf(&charts, `<figure class="chart-card"><figcaption><span class="name">%s</span><span class="meta">%s · resets %s</span><span class="meta">%s</span></figcaption>%s</figure>`,
-			breakableLabel(label), html.EscapeString(headline), html.EscapeString(w.ResetsAt.Local().Format("Mon 15:04")), html.EscapeString(detail),
+			breakableLabel(label), html.EscapeString(headline), dateTag(w.ResetsAt), html.EscapeString(detail),
 			renderChart(chartInput{Label: label, Window: w, Points: cyclePoints[rc.id], Pace: paces[rc.id], Now: now}))
 	}
 	if charts.Len() > 0 {
@@ -552,10 +609,10 @@ func renderPage(notice string, now time.Time) []byte {
 	// Secondary explanation, opened from the header's info button. It sits outside #app so the
 	// periodic in-place refresh never closes it; anchor-name on #info re-tethers it after a swap.
 	b.WriteString(`<div id="about" class="about" popover><h2>How it works</h2>`)
-	b.WriteString(`<p><b>How it picks.</b> The proxy offers only accounts it considers usable; rate-limited, cooling-down and disabled accounts are already left out. Of those, the one whose weekly limit resets soonest wins.</p>`)
-	b.WriteString(`<p><b>When it calls Anthropic.</b> Only on the timer, shortly after a stored reset passes, or when you press Refresh (at most once a minute). Picking an account never makes a network call. Between checks, the usage shown with every Claude response keeps the numbers current.</p>`)
-	b.WriteString(`<p><b>Cooldowns.</b> If the proxy is still holding back an account that a check shows has room again, for example after an early reset, the plugin clears that cooldown.</p>`)
-	b.WriteString(`<p><b>History.</b> Readings are kept for 15 days in <code>` + html.EscapeString(cfg.historyPath()) + `</code>. Picks and sent counts start at zero when the proxy starts.</p>`)
+	b.WriteString(`<p><b>How it picks.</b> The proxy offers only accounts it considers usable; rate-limited, cooling-down and disabled accounts are already left out. Of those, the one whose weekly limit resets soonest wins. Accounts at a full limit go last, and accounts with an expired login after them.</p>`)
+	b.WriteString(`<p><b>When it calls Anthropic.</b> Only on the timer, shortly after a stored reset passes, every 2 minutes for a while after a failed check, when the check interval changes, or when you press Refresh (at most once a minute). Picking an account never makes a network call. Between checks, the usage shown with every Claude response keeps the numbers current.</p>`)
+	b.WriteString(`<p><b>Cooldowns.</b> When Anthropic refuses a request with a rate limit, the proxy holds that account back for a while and this page shows it as cooling down. The plugin leaves that alone, even if the usage figures still show room. Only when a limit that was full is reset early does it clear the cooldown.</p>`)
+	b.WriteString(`<p><b>History.</b> Readings are kept for ` + fmt.Sprintf("%.0f", historyRetention.Hours()/24) + ` days in <code>` + html.EscapeString(cfg.historyPath()) + `</code>. Picks and sent counts start at zero when the proxy starts.</p>`)
 	b.WriteString(`<p><b>Settings.</b> Plugins page → ` + pluginName + `.</p>`)
 	// switch is native in Safari; role="switch" plus our own styling covers other browsers.
 	b.WriteString(`<label class="setting"><span>Background motion<span class="meta">Also off when your system reduces motion.</span></span><input id="motion" type="checkbox" switch role="switch" checked></label>`)

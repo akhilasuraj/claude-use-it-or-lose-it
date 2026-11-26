@@ -2,7 +2,7 @@ package main
 
 // C ABI glue for the CLIProxyAPI dynamic-library plugin contract.
 // Everything below is boilerplate copied from the official examples; the
-// plugin logic lives in plugin.go, refresh.go and page.go.
+// plugin logic lives in the other files of this package.
 
 /*
 #include <stdint.h>

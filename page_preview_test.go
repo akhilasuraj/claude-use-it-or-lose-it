@@ -6,13 +6,15 @@ import (
 	"time"
 )
 
-// TestWritePreview renders the status page with sample data when RS_PREVIEW is set to an
-// output path. Used only for visual checks: RS_PREVIEW=out.html go test -run TestWritePreview
+// TestWritePreview renders the status page with sample data when UIOL_PREVIEW is set to an
+// output path. Used only for visual checks: UIOL_PREVIEW=out.html go test -run TestWritePreview
 func TestWritePreview(t *testing.T) {
-	out := os.Getenv("RS_PREVIEW")
+	out := os.Getenv("UIOL_PREVIEW")
 	if out == "" {
-		t.Skip("RS_PREVIEW not set")
+		t.Skip("UIOL_PREVIEW not set")
 	}
+	resetGlobals(t)
+	t.Cleanup(func() { resetGlobals(t) })
 	now := time.Now()
 	state.mu.Lock()
 	state.accounts = map[string]accountState{
@@ -25,13 +27,13 @@ func TestWritePreview(t *testing.T) {
 		"c": {ID: "c", Label: "jo@example.net", Priority: -27, FetchedAt: now.Add(-8 * time.Second), Windows: map[string]usageWindow{
 			"seven_day": {Utilization: 100, ResetsAt: now.Add(30 * time.Hour)},
 			"five_hour": {Utilization: 94, ResetsAt: now.Add(3 * time.Hour)}}},
-		"d": {ID: "d", Label: "kim@example.com", Priority: 5, Error: "usage endpoint returned HTTP 401"},
+		"d": {ID: "d", Label: "kim@example.com", Priority: 5, Error: "usage endpoint returned HTTP 401", Problem: problemUnauthorized, FailCount: 2},
 	}
 	state.lastRun = now.Add(-3 * time.Minute)
 	state.nextRun = now.Add(27 * time.Minute)
 	state.mu.Unlock()
-	stats.record("a", "")
-	stats.record("a", "")
+	stats.record("a")
+	stats.record("a")
 	stats.recordServed("a")
 	stats.recordServed("a")
 	stats.recordServed("a")
@@ -59,7 +61,7 @@ func TestWritePreview(t *testing.T) {
 			history.add(a, t)
 		}
 	}
-	if os.Getenv("RS_SHADOW") != "" {
+	if os.Getenv("UIOL_SHADOW") != "" {
 		currentConfig.Store(pluginConfig{Shadow: true})
 	}
 	if err := os.WriteFile(out, renderPage("", now), 0o644); err != nil {

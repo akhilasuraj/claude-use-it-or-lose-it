@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,7 @@ import (
 const (
 	pluginName      = "claude-use-it-or-lose-it"
 	pluginTitle     = "Use It or Lose It"
-	pluginVersion   = "1.1.0"
+	pluginVersion   = "1.1.1"
 	resourcePath    = "/status"
 	claudeProvider  = "claude"
 	defaultInterval = 30
@@ -43,7 +44,7 @@ var legacyKeys = map[string]string{
 	keyDeprioritize: "deprioritize_exhausted",
 }
 
-// pluginConfig mirrors plugins.configs.reset-scheduler in config.yaml.
+// pluginConfig mirrors plugins.configs.claude-use-it-or-lose-it in config.yaml.
 type pluginConfig struct {
 	RefreshIntervalMinutes int
 	DeprioritizeExhausted  *bool
@@ -66,39 +67,54 @@ func parseConfig(data []byte) (pluginConfig, error) {
 	}
 	cfg := pluginConfig{}
 	if v, ok := get(keyInterval); ok {
-		switch n := v.(type) {
-		case int:
-			cfg.RefreshIntervalMinutes = n
-		case float64:
-			cfg.RefreshIntervalMinutes = int(n)
-		case string:
-			fmt.Sscanf(strings.TrimSpace(n), "%d", &cfg.RefreshIntervalMinutes)
-		}
+		cfg.RefreshIntervalMinutes = parseInt(v)
 	}
 	if v, ok := get(keyDeprioritize); ok {
-		var b bool
-		switch x := v.(type) {
-		case bool:
-			b = x
-		case string:
-			b = !strings.EqualFold(strings.TrimSpace(x), "false")
-		default:
-			b = true
+		if b, ok := parseBool(v); ok {
+			cfg.DeprioritizeExhausted = &b
 		}
-		cfg.DeprioritizeExhausted = &b
 	}
 	if v, ok := raw[keyShadow]; ok && v != nil {
-		switch x := v.(type) {
-		case bool:
-			cfg.Shadow = x
-		case string:
-			cfg.Shadow = strings.EqualFold(strings.TrimSpace(x), "true")
-		}
+		cfg.Shadow, _ = parseBool(v)
 	}
 	if v, ok := raw[keyHistoryDir]; ok && v != nil {
 		cfg.HistoryDir = strings.TrimSpace(fmt.Sprint(v))
 	}
 	return cfg, nil
+}
+
+// parseInt reads a whole number written as a YAML number or a string. Anything else is 0, which
+// means the default.
+func parseInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	case string:
+		i, _ := strconv.Atoi(strings.TrimSpace(n))
+		return i
+	}
+	return 0
+}
+
+// parseBool reads an on/off value the way people write it in YAML or the panel: true/false,
+// yes/no, on/off or 1/0. ok is false for anything else, so the caller keeps its default.
+func parseBool(v any) (value, ok bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case int:
+		return x != 0, x == 0 || x == 1
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "true", "yes", "on", "1":
+			return true, true
+		case "false", "no", "off", "0":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func (c pluginConfig) interval() time.Duration {
@@ -142,12 +158,14 @@ func configure(raw []byte) error {
 		}
 		cfg = parsed
 	}
-	previous := loadedConfig()
+	previous, reconfigured := currentConfig.Load().(pluginConfig)
 	currentConfig.Store(cfg)
 	if previous.HistoryDir != cfg.HistoryDir || !history.loaded() {
 		history.load(cfg.historyPath())
 	}
-	if previous.interval() != cfg.interval() {
+	// On first registration the refresher has not started yet; it runs its first check by
+	// itself once the host has loaded the credentials.
+	if reconfigured && previous.interval() != cfg.interval() {
 		requestRefresh(true)
 	}
 	return nil
@@ -231,12 +249,11 @@ func registration() map[string]any {
 // ---- scheduling --------------------------------------------------------------------------
 
 type pickStats struct {
-	mu       sync.Mutex
-	counts   map[string]int64 // picks the plugin made, or would have made in watch-only mode
-	served   map[string]int64 // requests that were actually sent with each account
-	lastID   string
-	lastAt   time.Time
-	lastNote string
+	mu     sync.Mutex
+	counts map[string]int64 // picks the plugin made, or would have made in watch-only mode
+	served map[string]int64 // requests that were actually sent with each account
+	lastID string
+	lastAt time.Time
 }
 
 var stats = &pickStats{counts: map[string]int64{}, served: map[string]int64{}}
@@ -250,15 +267,12 @@ func (s *pickStats) recordServed(id string) {
 	s.mu.Unlock()
 }
 
-func (s *pickStats) record(id, note string) {
+func (s *pickStats) record(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if id != "" {
-		s.counts[id]++
-		s.lastID = id
-	}
+	s.counts[id]++
+	s.lastID = id
 	s.lastAt = time.Now()
-	s.lastNote = note
 }
 
 func pick(raw []byte) ([]byte, error) {
@@ -267,12 +281,13 @@ func pick(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cfg := loadedConfig()
-	id, note := choose(req.Candidates, snapshotAccounts(), cfg, time.Now())
+	markOffered(req.Candidates)
+	id := choose(req.Candidates, snapshotAccounts(), cfg, time.Now())
 	if id == "" {
 		// Leave the decision to the configured built-in routing strategy.
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
-	stats.record(id, note)
+	stats.record(id)
 	if cfg.Shadow {
 		// Watch-only mode: count the choice but let the built-in strategy decide.
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
@@ -282,20 +297,20 @@ func pick(raw []byte) ([]byte, error) {
 
 // choose returns the candidate ID to use, or "" to fall back to the built-in strategy.
 // It only reads cached data and never performs network calls.
-func choose(cands []pluginapi.SchedulerAuthCandidate, accounts map[string]accountState, cfg pluginConfig, now time.Time) (string, string) {
+func choose(cands []pluginapi.SchedulerAuthCandidate, accounts map[string]accountState, cfg pluginConfig, now time.Time) string {
 	if len(cands) == 0 {
-		return "", ""
+		return ""
 	}
 	for _, c := range cands {
-		if !strings.EqualFold(strings.TrimSpace(c.Provider), claudeProvider) {
-			return "", "non-claude candidates present"
+		if !isClaude(c.Provider) {
+			return "" // another provider could serve this request
 		}
 	}
 	ranked := rankCandidates(cands, accounts, cfg, now)
 	if len(ranked) == 0 || !ranked[0].hasReset {
-		return "", "no cached reset data"
+		return "" // no usage data for the account that would come first
 	}
-	return ranked[0].id, "soonest weekly reset"
+	return ranked[0].id
 }
 
 type rankedCandidate struct {
@@ -304,13 +319,17 @@ type rankedCandidate struct {
 	hasReset  bool
 	resetsAt  time.Time
 	exhausted bool
+	expired   bool // its login has expired, so it cannot serve requests
 }
 
 func rankCandidates(cands []pluginapi.SchedulerAuthCandidate, accounts map[string]accountState, cfg pluginConfig, now time.Time) []rankedCandidate {
 	out := make([]rankedCandidate, 0, len(cands))
 	for _, c := range cands {
 		rc := rankedCandidate{id: c.ID, priority: c.Priority}
-		if acc, ok := accounts[c.ID]; ok && acc.Error == "" {
+		acc, ok := accounts[c.ID]
+		rc.expired = ok && acc.LoginExpired
+		// Readings stay usable after a failed check; only an expired login makes them meaningless.
+		if ok && !acc.LoginExpired {
 			if w, ok := acc.Windows[allModelsWindow]; ok && w.ResetsAt.After(now) {
 				rc.hasReset = true
 				rc.resetsAt = w.ResetsAt
@@ -323,6 +342,9 @@ func rankCandidates(cands []pluginapi.SchedulerAuthCandidate, accounts map[strin
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if a.expired != b.expired {
+			return !a.expired
+		}
 		if a.exhausted != b.exhausted {
 			return !a.exhausted
 		}
@@ -366,7 +388,7 @@ func handleResource(raw []byte) ([]byte, error) {
 		if requestRefresh(false) {
 			notice = "Refresh started. This page reloads automatically."
 		} else {
-			notice = "A refresh ran less than a minute ago, so this one was skipped."
+			notice = "A refresh is running or ran less than a minute ago, so this one was skipped."
 		}
 	}
 	body := renderPage(notice, time.Now())

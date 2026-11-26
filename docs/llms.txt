@@ -9,7 +9,7 @@ How it works:
 - The weekly limit used is the one across all models; Claude plans no longer have separate Opus or Sonnet weekly limits.
 - Requests that could also go to a non-Claude provider are left to CLIProxyAPI's normal routing.
 - Usage is checked with Anthropic every 30 minutes (never per request) and updated live from Anthropic's rate-limit response headers.
-- When an account has room again after an early reset, the proxy's cooldown for it is cleared.
+- When a limit that was full is reset early, the proxy's cooldown for that account is cleared. Other cooldowns, such as after a rate limit while the usage figures still show room, are left to the proxy.
 - With no usage data, CLIProxyAPI's normal routing is used.
 - Keeps 15 days of usage history and shows a status page in the CLIProxyAPI management panel: pick order, burn pace, how much would go unused at reset, weekly usage charts per account, and login-expired warnings.
 - Watch-only mode shows what it would pick without changing routing.
